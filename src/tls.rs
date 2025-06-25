@@ -2,60 +2,60 @@ use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::ServerConfig;
 use rustls::crypto::aws_lc_rs as provider;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
-use std::io::ErrorKind;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::sync::Arc;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
-pub fn load_certs(filename: &str) -> Vec<CertificateDer<'static>> {
-    CertificateDer::pem_file_iter(filename)
-        .expect("cannot open certificate file")
-        .map(|result| result.unwrap())
-        .collect()
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    pub server_config: Arc<ServerConfig>,
+    pub client_config: Arc<ClientConfig>,
 }
 
-pub fn load_private_key(filename: &str) -> PrivateKeyDer<'static> {
-    PrivateKeyDer::from_pem_file(filename).expect("cannot read private key file")
-}
+impl TlsConfig {
+    pub fn new(
+        cert_path: &str,
+        key_path: &str,
+        ca_path: Option<&str>,
+    ) -> anyhow::Result<TlsConfig> {
+        let certs = Self::load_certificates(cert_path)?;
+        let key = Self::load_private_key(key_path)?;
 
-pub fn load_tls_config(
-    cert_path: &String,
-    key_path: &String,
-    ca_path: &String,
-) -> (Arc<ClientConfig>, Arc<ServerConfig>) {
-    let certs = load_certs(cert_path);
-    let key = load_private_key(key_path);
+        let mut root_store = RootCertStore::empty();
+        if let Some(ca_path) = ca_path {
+            root_store.add_parsable_certificates(
+                CertificateDer::pem_file_iter(ca_path)?.map(|result| result.unwrap()),
+            );
+        } else {
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
 
-    let mut root_store = RootCertStore::empty();
+        let server = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs.clone(), key.clone_key())?;
 
-    if !ca_path.is_empty() {
-        root_store.add_parsable_certificates(
-            CertificateDer::pem_file_iter(ca_path)
-                .expect("Cannot open CA file")
-                .map(|result| result.unwrap()),
-        );
-    } else {
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let mut client = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(certs, key)?;
+
+        client.dangerous().set_certificate_verifier(Arc::new(
+            danger::NoCertificateVerification::new(provider::default_provider()),
+        ));
+
+        Ok(TlsConfig {
+            server_config: Arc::new(server),
+            client_config: Arc::new(client),
+        })
     }
 
-    let server = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs.clone(), key.clone_key())
-        .expect("bad certificates/private key");
+    pub fn load_certificates(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+        Ok(CertificateDer::pem_file_iter(path)?
+            .map(|result| result)
+            .collect::<Result<Vec<_>, _>>()?)
+    }
 
-    let mut client = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_client_auth_cert(certs, key)
-        .expect("invalid client auth certs/key");
-
-    client
-        .dangerous()
-        .set_certificate_verifier(Arc::new(danger::NoCertificateVerification::new(
-            provider::default_provider(),
-        )));
-
-    (Arc::new(client), Arc::new(server))
+    pub fn load_private_key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
+        Ok(PrivateKeyDer::from_pem_file(path)?)
+    }
 }
 
 mod danger {
