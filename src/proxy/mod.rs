@@ -8,7 +8,7 @@ use acceptor::Acceptor;
 use connector::Connector;
 
 use std::sync::Arc;
-use tokio::{io::AsyncWriteExt, select, time::sleep};
+use tokio::{io::AsyncWriteExt, select, time::timeout};
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
@@ -45,32 +45,51 @@ impl Proxy {
         let mut client_buf = vec![];
         let mut server_buf = vec![];
 
+        let client_timeout = self.inner.service.client_timeout;
+        let server_timeout = self.inner.service.server_timeout;
+
         loop {
             select! {
                 // Client -> Server
-                client_read = connection.client.read_chunk(&mut client_buf) => {
-                    if client_read? == 0 {
-                        debug!("Client sent EOF");
-                        connection.server.shutdown().await?;
-                        break;
+                client_read = timeout(client_timeout, connection.client.read_chunk(&mut client_buf)) => {
+                    match client_read {
+                        Ok(Ok(0)) => {
+                            debug!("Client sent EOF");
+                            connection.server.shutdown().await?;
+                            break;
+                        }
+                        Ok(Ok(_)) => {
+                            debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
+                            connection.server.write_chunk(&client_buf).await?;
+                            client_buf.clear();
+                        }
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            debug!("Client reached timeout");
+                            break;
+                        }
                     }
-
-                    debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
-                    connection.server.write_chunk(&client_buf).await?;
-                    client_buf.clear();
                 }
 
                 // Server -> Client
-                server_read = connection.server.read_chunk(&mut server_buf) => {
-                    if server_read? == 0 {
-                        debug!("Server sent EOF");
-                        connection.client.shutdown().await?;
-                        break;
+                server_read = timeout(server_timeout, connection.server.read_chunk(&mut server_buf)) => {
+                    match server_read {
+                        Ok(Ok(0)) => {
+                            debug!("Server sent EOF");
+                            connection.client.shutdown().await?;
+                            break;
+                        }
+                        Ok(Ok(_)) => {
+                            debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
+                            connection.client.write_chunk(&server_buf).await?;
+                            server_buf.clear();
+                        }
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            debug!("Client reached timeout");
+                            break;
+                        }
                     }
-
-                    debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
-                    connection.client.write_chunk(&server_buf).await?;
-                    server_buf.clear();
                 }
             }
         }
@@ -91,7 +110,7 @@ impl Proxy {
                     (client, addr)
                 }
                 Err(e) => {
-                    warn!("Could not connect to service: {}", e);
+                    warn!("Failed to connect to client: {}", e);
                     continue;
                 }
             };
@@ -107,12 +126,9 @@ impl Proxy {
                 }
             };
 
-            let mut connection = Connection {
-                client,
-                server: Box::pin(server),
-            };
-
+            let mut connection = Connection { client, server };
             let proxy = self.clone();
+
             tokio::spawn(async move {
                 match proxy.handle_connection(&mut connection).await {
                     Ok(_) => info!("Closed connection from {}", addr),

@@ -2,8 +2,8 @@
 
 openssl req -x509 \
     -newkey rsa:4096 \
-    -keyout key.pem \
-    -out cert.pem \
+    -keyout ./test/key.pem \
+    -out ./test/cert.pem \
     -sha256 \
     -days 2 \
     -nodes \

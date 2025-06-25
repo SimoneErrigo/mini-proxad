@@ -3,14 +3,15 @@ import random
 import time
 import ssl
 
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 9443
 
-CERT_FILE = "./test/cert.pem"
-KEY_FILE = "./test/key.pem"
+CERT_FILE = "./test/keys/cert.pem"
+KEY_FILE = "./test/keys/key.pem"
+CA_FILE = "./test/keys/ca-cert.pem"
 
-CONCURRENT_CONNECTIONS = 1
-MESSAGES_PER_CONNECTION = 2
+CONCURRENT_CONNECTIONS = 1000
+MESSAGES_PER_CONNECTION = 3
 MAX_MSG_SIZE = 1024
 TICK_INTERVAL = 2
 
@@ -63,8 +64,9 @@ async def run_tick(ssl_context: ssl.SSLContext):
 
 
 async def main_loop():
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    #ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+    ssl_context.load_verify_locations(cafile=CA_FILE)
 
     while True:
         start_time = time.time()

@@ -1,6 +1,6 @@
-use humantime::Duration;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
