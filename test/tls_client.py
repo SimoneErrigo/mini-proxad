@@ -1,19 +1,23 @@
 import asyncio
 import random
 import time
+import ssl
 
 HOST = "0.0.0.0"
-PORT = 9000
+PORT = 9443
 
-CONCURRENT_CONNECTIONS = 1000
+CERT_FILE = "./test/server.crt"
+KEY_FILE = "./test/server.key"
+
+CONCURRENT_CONNECTIONS = 1
 MESSAGES_PER_CONNECTION = 2
 MAX_MSG_SIZE = 1024
 TICK_INTERVAL = 2
 
-
-async def tcp_echo_client(client_id: int):
+async def tcp_echo_client(client_id: int, ssl_context: ssl.SSLContext):
     start = time.perf_counter()
-    reader, writer = await asyncio.open_connection(HOST, PORT)
+    reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ssl_context)
+
     total_sent = 0
     total_received = 0
 
@@ -41,9 +45,9 @@ async def tcp_echo_client(client_id: int):
     return total_sent, total_received, duration
 
 
-async def run_tick():
+async def run_tick(ssl_context: ssl.SSLContext):
     tasks = [
-        asyncio.create_task(tcp_echo_client(i)) for i in range(CONCURRENT_CONNECTIONS)
+        asyncio.create_task(tcp_echo_client(i, ssl_context)) for i in range(CONCURRENT_CONNECTIONS)
     ]
     results = await asyncio.gather(*tasks)
 
@@ -59,9 +63,12 @@ async def run_tick():
 
 
 async def main_loop():
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    #ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+
     while True:
         start_time = time.time()
-        sent, received, min_t, max_t, avg_t = await run_tick()
+        sent, received, min_t, max_t, avg_t = await run_tick(ssl_context)
         elapsed = time.time() - start_time
 
         print(

@@ -9,7 +9,7 @@ use connector::Connector;
 
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, select, time::sleep};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
 pub struct Proxy {
@@ -85,8 +85,16 @@ impl Proxy {
         );
 
         loop {
-            let (client, addr) = self.inner.acceptor.accept().await.unwrap();
-            info!("Accepted connection from {}", addr);
+            let (client, addr) = match self.inner.acceptor.accept().await {
+                Ok((client, addr)) => {
+                    info!("Accepted connection from {}", addr);
+                    (client, addr)
+                }
+                Err(e) => {
+                    warn!("Could not connect to service: {}", e);
+                    continue;
+                }
+            };
 
             let server = match self.inner.connector.connect().await {
                 Ok(server) => server,
