@@ -4,13 +4,14 @@ mod service;
 mod tls;
 
 use clap::Parser;
-use humantime::Duration;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use crate::filter::Filter;
 use crate::proxy::Proxy;
 use crate::service::Service;
 use crate::tls::TlsConfig;
@@ -33,10 +34,20 @@ pub struct Args {
     #[arg(long, value_name = "PORT", required = true)]
     pub server_port: u16,
 
-    #[arg(long, value_name = "DURATION", default_value = "1s")]
+    #[arg(
+        long,
+        value_parser = humantime::parse_duration,
+        value_name = "DURATION",
+        default_value = "30s"
+    )]
     pub client_timeout: Duration,
 
-    #[arg(long, value_name = "DURATION", default_value = "1s")]
+    #[arg(
+        long,
+        value_parser = humantime::parse_duration,
+        value_name = "DURATION",
+        default_value = "10s"
+    )]
     pub server_timeout: Duration,
 
     #[arg(long = "tls", default_value = "false")]
@@ -91,6 +102,18 @@ async fn main() {
         None
     };
 
+    let filter = args.python_script.as_ref().and_then(|path| {
+        Filter::load_from_file(&path)
+            .map(|filter| {
+                info!("Loaded python script {}", path);
+                Arc::new(filter)
+            })
+            .map_err(|e| {
+                error!("Failed to load python script {}: {}", path, e);
+            })
+            .ok()
+    });
+
     let service = Service {
         name: args.service_name,
         client_addr: SocketAddr::new(args.client_ip, args.client_port),
@@ -98,6 +121,7 @@ async fn main() {
         client_timeout: args.client_timeout,
         server_timeout: args.server_timeout,
         tls_config,
+        filter,
     };
 
     match Proxy::from_service(service).await {

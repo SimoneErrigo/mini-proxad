@@ -6,14 +6,12 @@ import ssl
 HOST = "127.0.0.1"
 PORT = 9443
 
-CERT_FILE = "./test/keys/cert.pem"
-KEY_FILE = "./test/keys/key.pem"
 CA_FILE = "./test/keys/ca-cert.pem"
 
 CONCURRENT_CONNECTIONS = 1000
 MESSAGES_PER_CONNECTION = 3
 MAX_MSG_SIZE = 1024
-TICK_INTERVAL = 2
+TICK_INTERVAL = 4
 
 async def tcp_echo_client(client_id: int, ssl_context: ssl.SSLContext):
     start = time.perf_counter()
@@ -65,7 +63,6 @@ async def run_tick(ssl_context: ssl.SSLContext):
 
 async def main_loop():
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
     ssl_context.load_verify_locations(cafile=CA_FILE)
 
     while True:

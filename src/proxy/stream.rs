@@ -1,11 +1,8 @@
 use async_trait::async_trait;
 use std::future::poll_fn;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
 
 pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
 

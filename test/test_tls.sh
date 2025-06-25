@@ -7,4 +7,5 @@ cargo run -- \
 	--tls \
 	--tls-cert-file ./test/keys/cert.pem \
 	--tls-key-file ./test/keys/key.pem \
-	--tls-ca-file ./test/keys/ca-cert.pem
+	--tls-ca-file ./test/keys/ca-cert.pem \
+	--python-script ./test/filter.py

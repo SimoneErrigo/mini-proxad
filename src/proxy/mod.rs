@@ -6,6 +6,7 @@ use crate::proxy::stream::ProxyStream;
 use crate::service::Service;
 use acceptor::Acceptor;
 use connector::Connector;
+use pyo3::Python;
 
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, select, time::timeout};
@@ -41,6 +42,25 @@ impl Proxy {
         })
     }
 
+    fn handle_filter(&self, name: &str, chunk: &mut Vec<u8>) {
+        if let Some(filter) = self.inner.service.filter.clone() {
+            debug!("Running filter {}", name);
+            match filter.apply(name, &chunk) {
+                Ok(bytes) => {
+                    chunk.clear();
+                    Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
+                        Ok(bytes) => {
+                            debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
+                            chunk.extend_from_slice(bytes);
+                        }
+                        Err(e) => warn!("Failed to convert bytes: {}", e),
+                    });
+                }
+                Err(e) => warn!("Failed to run filter {}: {}", name, e),
+            }
+        }
+    }
+
     async fn handle_connection(&self, connection: &mut Connection) -> anyhow::Result<()> {
         let mut client_buf = vec![];
         let mut server_buf = vec![];
@@ -54,12 +74,13 @@ impl Proxy {
                 client_read = timeout(client_timeout, connection.client.read_chunk(&mut client_buf)) => {
                     match client_read {
                         Ok(Ok(0)) => {
-                            debug!("Client sent EOF");
+                            debug!("Client sent eof");
                             connection.server.shutdown().await?;
                             break;
                         }
                         Ok(Ok(_)) => {
                             debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
+                            self.handle_filter("client_filter", &mut client_buf);
                             connection.server.write_chunk(&client_buf).await?;
                             client_buf.clear();
                         }
@@ -75,12 +96,13 @@ impl Proxy {
                 server_read = timeout(server_timeout, connection.server.read_chunk(&mut server_buf)) => {
                     match server_read {
                         Ok(Ok(0)) => {
-                            debug!("Server sent EOF");
+                            debug!("Server sent eof");
                             connection.client.shutdown().await?;
                             break;
                         }
                         Ok(Ok(_)) => {
                             debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
+                            self.handle_filter("server_filter", &mut server_buf);
                             connection.client.write_chunk(&server_buf).await?;
                             server_buf.clear();
                         }
@@ -99,7 +121,7 @@ impl Proxy {
 
     pub async fn start(&self) {
         info!(
-            "Proxying {} for service '{}' at {}",
+            "Proxying {} for service {} at {}",
             self.inner.service.client_addr, self.inner.service.name, self.inner.service.server_addr
         );
 
@@ -118,7 +140,7 @@ impl Proxy {
             let server = match self.inner.connector.connect().await {
                 Ok(server) => server,
                 Err(e) => {
-                    error!(
+                    warn!(
                         "Failed to connect to service on {}: {}",
                         self.inner.service.server_addr, e
                     );

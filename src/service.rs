@@ -1,9 +1,8 @@
 use std::net::SocketAddr;
-use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
 
+use crate::filter::Filter;
 use crate::tls::TlsConfig;
 
 #[derive(Debug, Clone)]
@@ -14,4 +13,5 @@ pub struct Service {
     pub client_timeout: Duration,
     pub server_timeout: Duration,
     pub tls_config: Option<TlsConfig>,
+    pub filter: Option<Arc<Filter>>,
 }
