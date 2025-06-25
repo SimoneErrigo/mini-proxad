@@ -1,0 +1,20 @@
+[package]
+name = "mini-proxad"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+async-trait = "0.1"
+clap = { version = "4.5.40", features = ["derive"] }
+futures = "0.3.31"
+humantime = "2.2.0"
+pyo3 = { version = "0.25.1", features = ["anyhow", "auto-initialize", "chrono"] }
+rustls = "0.23"
+rustls-pemfile = "2.2.0"
+tokio = { version = "1.45.1", features = ["full"] }
+tokio-rustls = "0.26"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+webpki-roots = "1.0.1"
+
