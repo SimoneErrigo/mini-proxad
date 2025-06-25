@@ -5,5 +5,5 @@ cargo run -- \
 	--client-port 9443 \
 	--server-port 8443 \
 	--tls \
-	--tls-cert-file ./test/server.crt \
-	--tls-key-file ./test/server.key
+	--tls-cert-file ./test/cert.pem \
+	--tls-key-file ./test/key.pem
