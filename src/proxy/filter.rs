@@ -1,4 +1,4 @@
-use crate::proxy::flow::{Flow, History, HistoryChunk};
+use crate::proxy::flow::{Flow, History};
 use anyhow::Context;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};

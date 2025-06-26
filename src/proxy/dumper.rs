@@ -105,6 +105,11 @@ impl Dumper {
                 }
             }
 
+            if n_packets == 0 {
+                info!("Skipped dumping empty pcap file");
+                continue;
+            }
+
             let end = Utc::now().timestamp();
             format_map.insert("timestamp".into(), end.to_string());
             let filename = strfmt::strfmt(&self.format, &format_map)?;
