@@ -9,8 +9,12 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
+
+const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct Filter {
@@ -147,7 +151,7 @@ impl Filter {
 
         inotify
             .watches()
-            .add(&parent, WatchMask::MODIFY | WatchMask::CREATE)
+            .add(&parent, WatchMask::MODIFY)
             .with_context(|| format!("Failed to watch directory {}", parent.to_string_lossy()))?;
 
         let filter = self.clone();
@@ -156,22 +160,38 @@ impl Filter {
             let mut stream = inotify.into_event_stream(&mut buffer).unwrap();
             let path = filter.script_path.to_str().unwrap();
 
-            while let Some(event) = stream.next().await {
-                match event {
-                    Ok(event) if event.name.as_deref().is_some_and(|name| name == basename) => {
-                        info!("Detected change to python filter {}", path);
-
-                        match Self::load_module(&filter.script_path) {
-                            Ok(module) => {
-                                let mut guard = filter.module.write().await;
-                                *guard = module;
-                                info!("Reloaded python filter script");
+            let mut recent = false;
+            loop {
+                tokio::select! {
+                    maybe_event = stream.next() => {
+                        match maybe_event {
+                            Some(Ok(event)) if event.name.as_deref().is_some_and(|name| name == basename) => {
+                                info!("Detected change to python filter {}", path);
+                                recent = true;
                             }
-                            Err(e) => error!("Failed to reload python filter: {}", e),
+                            Some(Ok(_)) => (),
+                            Some(Err(e)) => warn!("Inotify error: {}", e),
+                            None => warn!("Stopping the filter watcher"),
                         }
                     }
-                    Ok(_) => (),
-                    Err(e) => warn!("Inotify error: {}", e),
+
+                    _ = async {
+                         if recent {
+                             sleep(INOTIFY_DEBOUNCE_TIME).await;
+                         } else {
+                             futures::future::pending::<()>().await;
+                         }
+                     }, if recent => {
+                         match Self::load_module(&filter.script_path) {
+                             Ok(module) => {
+                                 let mut guard = filter.module.write().await;
+                                 *guard = module;
+                                 info!("Reloaded python filter script");
+                             }
+                             Err(e) => error!("Failed to reload python filter: {}", e),
+                         }
+                         recent = false;
+                     }
                 }
             }
         });
