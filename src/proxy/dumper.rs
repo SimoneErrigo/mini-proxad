@@ -1,4 +1,5 @@
 use anyhow::Context;
+use anyhow::anyhow;
 use chrono::Utc;
 use etherparse::PacketBuilder;
 use pcap_file::pcap::{PcapPacket, PcapWriter};
@@ -6,34 +7,27 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
-use std::path::Path;
-use std::sync::RwLockWriteGuard;
-use std::{fs::File, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-use strfmt::{strfmt, strfmt_builder};
+use std::sync::mpsc;
+use std::{fs::File, path::PathBuf, time::Duration};
 use tempfile::NamedTempFile;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc;
-use tokio::time::sleep_until;
-use tokio::{fs, time::Instant};
-use tracing::{error, info};
+use tokio::fs;
+use tokio::time::Instant;
+use tracing::{error, info, warn};
 
+use crate::proxy::flow::Flow;
 use crate::{config::Config, service::Service};
+
+// Dump ignoring the interval
+const MAX_PACKETS: usize = 100;
 
 pub struct Dumper {
     path: PathBuf,
     format: String,
     interval: Duration,
-    rx: mpsc::Receiver<DumperMsg>,
+    rx: mpsc::Receiver<Flow>,
 }
 
-pub struct DumperMsg {
-    src: SocketAddr,
-    dst: SocketAddr,
-    time: Duration,
-    chunk: Vec<u8>,
-}
-
-pub type DumperChannel = mpsc::Sender<DumperMsg>;
+pub type DumperChannel = mpsc::Sender<Flow>;
 
 impl Dumper {
     pub async fn start(service: &Service, config: &Config) -> anyhow::Result<DumperChannel> {
@@ -72,7 +66,7 @@ impl Dumper {
             ("server_port".into(), service.server_addr.port().to_string()),
         ]);
 
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel();
         let dumper = Dumper {
             path,
             format,
@@ -80,25 +74,32 @@ impl Dumper {
             rx,
         };
 
-        tokio::spawn(async move { dumper.dump_pcap(format_map).await });
+        tokio::task::spawn_blocking(move || dumper.dumper(format_map));
         Ok(tx)
     }
 
-    async fn dump_pcap(mut self, mut format_map: HashMap<String, String>) -> anyhow::Result<()> {
+    fn dumper(self, mut format_map: HashMap<String, String>) -> anyhow::Result<()> {
         loop {
             let mut tmpfile = NamedTempFile::new()?;
             let mut writer = PcapWriter::new(tmpfile.as_file_mut())?;
 
-            let deadline = tokio::time::Instant::now() + self.interval;
+            let mut n_packets = 0;
+            let start = Instant::now();
             loop {
-                tokio::select! {
-                    maybe_msg = self.rx.recv() => {
-                        if let Some(msg) = maybe_msg {
-                            let packet = Self::build_packet(msg.src, msg.dst, msg.time, 0, 0, 0, &msg.chunk)?;
-                            writer.write_packet(&packet)?;
-                        }
-                    }
-                    _ = sleep_until(deadline) => {
+                let elapsed = start.elapsed();
+                if elapsed >= self.interval || n_packets > MAX_PACKETS {
+                    break;
+                }
+                let timeout = self.interval - elapsed;
+
+                match self.rx.recv_timeout(timeout) {
+                    Ok(flow) => match Self::write_tcp_flow(&mut writer, &flow) {
+                        Ok(n) => n_packets += n,
+                        Err(e) => warn!("Failed to dump pcaps for flow {}: {}", flow.id, e),
+                    },
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        warn!("Dumper channel closed");
                         break;
                     }
                 }
@@ -116,24 +117,211 @@ impl Dumper {
         }
     }
 
-    fn build_packet(
-        src: SocketAddr,
-        dst: SocketAddr,
-        timestamp: Duration,
-        seq: u32,
-        ack: u32,
-        flags: u16,
-        payload: &[u8],
-    ) -> anyhow::Result<PcapPacket<'static>> {
-        let (src_ip, src_port, dst_ip, dst_port) = match (src, dst) {
-            (SocketAddr::V4(src), SocketAddr::V4(dst)) => {
-                (src.ip().clone(), src.port(), dst.ip().clone(), dst.port())
-            }
-            _ => todo!("ipv6"),
+    pub fn write_tcp_flow(
+        writer: &mut PcapWriter<&mut File>,
+        flow: &Flow,
+    ) -> anyhow::Result<usize> {
+        let src_ip = match flow.client_addr.ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            _ => anyhow::bail!("Only IPv4 supported"),
         };
 
-        let mut builder = PacketBuilder::ipv4(src_ip.octets(), dst_ip.octets(), 64)
-            .tcp(src_port, dst_port, seq, 1024);
+        let dst_ip = match flow.server_addr.ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            _ => anyhow::bail!("Only IPv4 supported"),
+        };
+
+        let src_port = flow.client_addr.port();
+        let dst_port = flow.server_addr.port();
+
+        let mut seq_client = 1_000;
+        let mut seq_server = 1_000_000;
+        let mut ack_client = seq_server + 1;
+        let mut ack_server = seq_client + 1;
+
+        let mut n_packets = 0;
+
+        let mut timestamp = flow
+            .client_history
+            .chunks
+            .first()
+            .map(|chunk| chunk.timestamp)
+            .map(|timestamp| {
+                Duration::new(
+                    timestamp.timestamp() as u64,
+                    timestamp.timestamp_subsec_nanos(),
+                )
+            })
+            .ok_or_else(|| anyhow!("Malformed flow with no chunks"))?;
+
+        Self::write_tcp_handshake(
+            writer,
+            timestamp,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            &mut seq_client,
+            &mut ack_client,
+            &mut seq_server,
+        )?;
+        n_packets += 3;
+
+        let mut last_was_client = false;
+
+        for (addr, chunk) in flow.into_iter() {
+            let (bytes, seq, ack, src, dst, sport, dport) = if addr == flow.client_addr {
+                let bytes = &flow.client_history.bytes[chunk.range.clone()];
+                last_was_client = true;
+
+                (
+                    bytes, seq_client, ack_client, src_ip, dst_ip, src_port, dst_port,
+                )
+            } else {
+                let bytes = &flow.server_history.bytes[chunk.range.clone()];
+                last_was_client = false;
+
+                (
+                    bytes, seq_server, ack_server, dst_ip, src_ip, dst_port, src_port,
+                )
+            };
+
+            timestamp = Duration::new(
+                chunk.timestamp.timestamp() as u64,
+                chunk.timestamp.timestamp_subsec_nanos(),
+            );
+
+            // PSH+ACK data packet
+            Self::write_tcp_packet(
+                writer, timestamp, src, dst, sport, dport, seq, ack, 0x18, bytes,
+            )?;
+            n_packets += 1;
+
+            // Update seq/ack numbers per side
+            if addr == flow.client_addr {
+                seq_client = seq_client.wrapping_add(bytes.len() as u32);
+                ack_server = seq_client;
+            } else {
+                seq_server = seq_server.wrapping_add(bytes.len() as u32);
+                ack_client = seq_server;
+            }
+        }
+
+        if last_was_client {
+            // Client sends FIN+ACK
+            Self::write_tcp_packet(
+                writer,
+                timestamp,
+                src_ip,
+                dst_ip,
+                src_port,
+                dst_port,
+                seq_client,
+                ack_client,
+                0x11,
+                &[],
+            )?;
+        } else {
+            // Server sends FIN
+            Self::write_tcp_packet(
+                writer,
+                timestamp,
+                dst_ip,
+                src_ip,
+                dst_port,
+                src_port,
+                seq_server,
+                ack_server,
+                0x11,
+                &[],
+            )?;
+        }
+        n_packets += 1;
+
+        Ok(n_packets)
+    }
+
+    fn write_tcp_handshake(
+        writer: &mut PcapWriter<&mut File>,
+        timestamp: Duration,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+        seq_client: &mut u32,
+        ack_client: &mut u32,
+        seq_server: &mut u32,
+    ) -> anyhow::Result<()> {
+        // SYN from client
+        Self::write_tcp_packet(
+            writer,
+            timestamp,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            *seq_client,
+            *ack_client,
+            0x02,
+            &[],
+        )?;
+        *seq_client += 1;
+
+        // SYN-ACK from server
+        Self::write_tcp_packet(
+            writer,
+            timestamp,
+            dst_ip,
+            src_ip,
+            dst_port,
+            src_port,
+            *seq_server,
+            *seq_client,
+            0x12,
+            &[],
+        )?;
+
+        *seq_server = seq_server.wrapping_add(1);
+        *ack_client = *seq_server;
+
+        // ACK from client
+        Self::write_tcp_packet(
+            writer,
+            timestamp,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            *seq_client,
+            *ack_client,
+            0x10,
+            &[],
+        )?;
+
+        Ok(())
+    }
+
+    fn write_tcp_packet(
+        writer: &mut PcapWriter<&mut File>,
+        timestamp: Duration,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: &[u8],
+    ) -> anyhow::Result<()> {
+        let window_size = 65535;
+
+        // Use dummy MAC addresses for ethernet layer
+        let dummy_mac1 = [0x11; 6];
+        let dummy_mac2 = [0x22; 6];
+
+        let mut builder = PacketBuilder::ethernet2(dummy_mac1, dummy_mac2)
+            .ipv4(src_ip.octets(), dst_ip.octets(), 64)
+            .tcp(src_port, dst_port, seq, window_size);
 
         if flags & 0x10 != 0 {
             builder = builder.ack(ack);
@@ -148,31 +336,19 @@ impl Dumper {
             builder = builder.psh();
         }
 
-        let mut buf = Vec::with_capacity(builder.size(payload.len()));
-        builder.write(&mut buf, payload)?;
-        buf.extend_from_slice(payload);
+        let mut buffer = Vec::<u8>::with_capacity(14 + 20 + 20 + payload.len());
+        builder.write(&mut buffer, payload)?;
 
-        Ok(PcapPacket {
+        let packet = PcapPacket {
             timestamp,
-            orig_len: buf.len() as u32,
-            data: Cow::Owned(buf),
-        })
-    }
+            orig_len: buffer.len() as u32,
+            data: Cow::Owned(buffer),
+        };
 
-    pub async fn write_chunk(
-        channel: &DumperChannel,
-        src: SocketAddr,
-        dst: SocketAddr,
-        chunk: Vec<u8>,
-    ) -> anyhow::Result<()> {
-        let now = Utc::now();
-        Ok(channel
-            .send(DumperMsg {
-                src,
-                dst,
-                time: Duration::new(now.timestamp() as u64, now.timestamp_subsec_nanos()),
-                chunk,
-            })
-            .await?)
+        writer
+            .write_packet(&packet)
+            .context("Failed to write packet to pcap")?;
+
+        Ok(())
     }
 }

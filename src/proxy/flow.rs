@@ -1,13 +1,13 @@
-use std::ops::Range;
+use std::{net::SocketAddr, ops::Range};
 
 use chrono::{DateTime, Utc};
-use tokio::time;
+use tokio::{io::AsyncWriteExt, time};
 use uuid::Uuid;
 
 use crate::proxy::stream::ProxyStream;
 use std::time::Duration;
 
-// TODO: Tweak this accordingly
+// TODO: Tweak this accordingly, for now 1MB
 const MAX_HISTORY_SIZE: usize = 1 << 20;
 
 pub enum FlowStatus {
@@ -19,12 +19,15 @@ pub enum FlowStatus {
 
 pub struct Flow {
     pub id: Uuid,
-    pub client: ProxyStream,
+    pub client: Option<ProxyStream>,
+    pub server: Option<ProxyStream>,
+    pub client_addr: SocketAddr,
+    pub server_addr: SocketAddr,
     pub server_history: History,
-    pub server: ProxyStream,
     pub client_history: History,
 }
 
+#[derive(Clone)]
 pub struct HistoryChunk {
     pub range: Range<usize>,
     pub timestamp: DateTime<Utc>,
@@ -37,12 +40,19 @@ pub struct History {
 }
 
 impl Flow {
-    pub fn new(client: ProxyStream, server: ProxyStream) -> Flow {
+    pub fn new(
+        client: ProxyStream,
+        client_addr: SocketAddr,
+        server: ProxyStream,
+        server_addr: SocketAddr,
+    ) -> Flow {
         Flow {
             id: Uuid::new_v4(),
-            client,
+            client: Some(client),
+            server: Some(server),
+            client_addr,
+            server_addr,
             client_history: History::default(),
-            server,
             server_history: History::default(),
         }
     }
@@ -80,6 +90,16 @@ impl Flow {
     ) -> anyhow::Result<()> {
         Ok(time::timeout(timeout, stream.write_chunk(history.last_chunk())).await??)
     }
+
+    pub async fn close(&mut self) -> anyhow::Result<()> {
+        if let Some(mut stream) = self.server.take() {
+            stream.shutdown().await?;
+        }
+        if let Some(mut stream) = self.client.take() {
+            stream.shutdown().await?;
+        }
+        Ok(())
+    }
 }
 
 impl History {
@@ -111,6 +131,55 @@ impl History {
                     timestamp: Utc::now(),
                 });
             }
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Flow {
+    type Item = (SocketAddr, HistoryChunk);
+    type IntoIter = FlowIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FlowIterator {
+            flow: self,
+            client_index: 0,
+            server_index: 0,
+        }
+    }
+}
+
+pub struct FlowIterator<'a> {
+    flow: &'a Flow,
+    client_index: usize,
+    server_index: usize,
+}
+
+impl<'a> Iterator for FlowIterator<'a> {
+    type Item = (SocketAddr, HistoryChunk);
+    fn next(&mut self) -> Option<Self::Item> {
+        let client_chunk = self.flow.client_history.chunks.get(self.client_index);
+        let server_chunk = self.flow.server_history.chunks.get(self.server_index);
+
+        match (client_chunk, server_chunk) {
+            (Some(client), Some(server)) => {
+                // Take the first in chronological order
+                if client.timestamp < server.timestamp {
+                    self.client_index += 1;
+                    Some((self.flow.client_addr, client.clone()))
+                } else {
+                    self.server_index += 1;
+                    Some((self.flow.server_addr, server.clone()))
+                }
+            }
+            (Some(client), None) => {
+                self.client_index += 1;
+                Some((self.flow.client_addr, client.clone()))
+            }
+            (None, Some(server)) => {
+                self.server_index += 1;
+                Some((self.flow.server_addr, server.clone()))
+            }
+            (None, None) => None,
         }
     }
 }

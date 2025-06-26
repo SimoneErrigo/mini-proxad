@@ -18,10 +18,8 @@ pub use crate::proxy::filter::Filter;
 //use crate::proxy::filter::run_filter;
 
 use anyhow::Context;
-use pyo3::Python;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{io::AsyncWriteExt, select, task::JoinHandle};
+use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
@@ -86,7 +84,12 @@ impl Proxy {
                 }
             };
 
-            let mut flow = Flow::new(client, server);
+            let mut flow = Flow::new(
+                client,
+                self.inner.service.client_addr,
+                server,
+                self.inner.service.server_addr,
+            );
             let proxy = self.clone();
 
             tokio::spawn(async move {
@@ -94,20 +97,13 @@ impl Proxy {
                     Ok(_) => info!("Closed flow from {}", addr),
                     Err(e) => warn!("Error in flow from {}: {}", addr, e),
                 };
-            });
-        }
-    }
 
-    async fn dump_chunk(
-        &self,
-        src: SocketAddr,
-        dst: SocketAddr,
-        chunk: Vec<u8>,
-    ) -> anyhow::Result<()> {
-        if let Some(ref channel) = self.inner.dumper {
-            Dumper::write_chunk(channel, src, dst, chunk).await
-        } else {
-            Ok(())
+                if let Some(ref channel) = proxy.inner.dumper {
+                    if let Err(e) = channel.send(flow) {
+                        warn!("Could not send flow to dumper: {}", e);
+                    }
+                }
+            });
         }
     }
 
@@ -121,7 +117,7 @@ impl Proxy {
         loop {
             select! {
                 // Client -> Server
-                client_status = Flow::read_chunk(&mut flow.client, &mut flow.client_history, client_timeout) => {
+                client_status = Flow::read_chunk(flow.client.as_mut().unwrap(), &mut flow.client_history, client_timeout) => {
                     match client_status? {
                         FlowStatus::Read => {
                             debug!(
@@ -132,18 +128,14 @@ impl Proxy {
                             run_filter!(filter, on_client_chunk, flow);
 
                             Flow::write_last_chunk(
-                                &mut flow.server,
+                                flow.server.as_mut().unwrap(),
                                 &mut flow.client_history,
                                 client_timeout,
                             )
                             .await?;
-
-                            //flow.server.write_chunk(&chunk).await?;
-                            //self.dump_chunk(client_addr, server_addr, std::mem::take(&mut client_buf)).await?;
                         }
                         FlowStatus::Closed => {
                             debug!("Client sent eof");
-                            flow.server.shutdown().await?;
                             break;
                         }
                         FlowStatus::Timeout => {
@@ -158,7 +150,7 @@ impl Proxy {
                 }
 
                 // Server -> Client
-                server_status = Flow::read_chunk(&mut flow.server, &mut flow.server_history, server_timeout) => {
+                server_status = Flow::read_chunk(flow.server.as_mut().unwrap(), &mut flow.server_history, server_timeout) => {
                     match server_status? {
                         FlowStatus::Read => {
                             debug!(
@@ -169,18 +161,14 @@ impl Proxy {
                             run_filter!(filter, on_server_chunk, flow);
 
                             Flow::write_last_chunk(
-                                &mut flow.client,
+                                flow.client.as_mut().unwrap(),
                                 &mut flow.server_history,
                                 server_timeout,
                             )
                             .await?;
-
-                            //flow.client.write_chunk(&chunk).await?;
-                            //self.dump_chunk(server_addr, client_addr, std::mem::take(&mut server_buf)).await?;
                         }
                         FlowStatus::Closed => {
                             debug!("Server sent eof");
-                            flow.client.shutdown().await?;
                             break;
                         }
                         FlowStatus::Timeout => {
@@ -197,6 +185,8 @@ impl Proxy {
         }
 
         run_filter!(filter, on_flow_close, flow);
+
+        flow.close().await?;
 
         debug!(
             client_history = flow.client_history.bytes.len(),
