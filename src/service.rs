@@ -2,7 +2,6 @@ use anyhow::Context;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
 
 use crate::config::Config;
 use crate::filter::Filter;
@@ -20,13 +19,19 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn from_config(config: Config) -> anyhow::Result<Service> {
+    pub fn from_config(config: &Config) -> anyhow::Result<Service> {
         let tls_config = config
             .tls_enabled
             .then(|| {
                 TlsConfig::new(
-                    &config.tls_cert_file.unwrap(),
-                    &config.tls_key_file.unwrap(),
+                    &config
+                        .tls_cert_file
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("TLS certificate is required"))?,
+                    &config
+                        .tls_key_file
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("TLS key is required"))?,
                     config.tls_ca_file.as_deref(),
                 )
                 .context("Failed to load TLS config")
@@ -38,16 +43,13 @@ impl Service {
             .as_ref()
             .map(|path| {
                 Filter::load_from_file(&path)
-                    .map(|filter| {
-                        info!("Loaded python script {}", path);
-                        Arc::new(filter)
-                    })
+                    .map(|filter| Arc::new(filter))
                     .with_context(|| format!("Failed to load python script at {}", path))
             })
             .transpose()?;
 
         Ok(Service {
-            name: config.service_name,
+            name: config.service_name.clone(),
             client_addr: SocketAddr::new(config.client_ip, config.client_port),
             server_addr: SocketAddr::new(config.server_ip, config.server_port),
             client_timeout: config.client_timeout,

@@ -6,7 +6,6 @@ mod tls;
 
 use clap::Parser;
 use std::process::exit;
-use std::sync::{Arc, RwLock};
 use tokio;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -50,7 +49,7 @@ async fn main() {
         }
     };
 
-    let service = match Service::from_config(config) {
+    let service = match Service::from_config(&config) {
         Ok(service) => {
             info!("Loaded service {}", service.name);
             service
@@ -61,8 +60,17 @@ async fn main() {
         }
     };
 
-    match Proxy::from_service(service).await {
-        Ok(proxy) => proxy.start().await,
-        Err(e) => error!("Proxy failed to start: {}", e),
+    match Proxy::start(service).await {
+        Ok(task) => {
+            info!(
+                "Started Proxad {} -> {}",
+                &config.client_port, &config.server_port
+            );
+            task.await.expect("Idk");
+        }
+        Err(e) => {
+            error!("Proxy failed to start: {}", e);
+            exit(1);
+        }
     }
 }

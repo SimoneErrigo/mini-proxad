@@ -9,7 +9,7 @@ use connector::Connector;
 use pyo3::Python;
 
 use std::sync::Arc;
-use tokio::{io::AsyncWriteExt, select, time::timeout};
+use tokio::{io::AsyncWriteExt, select, task::JoinHandle, time::timeout};
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
@@ -29,17 +29,55 @@ pub struct Connection {
 }
 
 impl Proxy {
-    pub async fn from_service(service: Service) -> anyhow::Result<Proxy> {
+    pub async fn start(service: Service) -> anyhow::Result<JoinHandle<()>> {
         let acceptor = Acceptor::new(&service).await?;
         let connector = Connector::new(&service).await?;
 
-        Ok(Proxy {
+        let proxy = Proxy {
             inner: Arc::new(ProxyInner {
                 service,
                 acceptor,
                 connector,
             }),
-        })
+        };
+
+        Ok(tokio::spawn(async move { proxy.handle_accept().await }))
+    }
+
+    async fn handle_accept(&self) {
+        loop {
+            let (client, addr) = match self.inner.acceptor.accept().await {
+                Ok((client, addr)) => {
+                    info!("Accepted connection from {}", addr);
+                    (client, addr)
+                }
+                Err(e) => {
+                    warn!("Failed to connect to client: {}", e);
+                    continue;
+                }
+            };
+
+            let server = match self.inner.connector.connect().await {
+                Ok(server) => server,
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to service on {}: {}",
+                        self.inner.service.server_addr, e
+                    );
+                    continue;
+                }
+            };
+
+            let mut connection = Connection { client, server };
+            let proxy = self.clone();
+
+            tokio::spawn(async move {
+                match proxy.handle_connection(&mut connection).await {
+                    Ok(_) => info!("Closed connection from {}", addr),
+                    Err(e) => error!("Error in connection {}: {}", addr, e),
+                };
+            });
+        }
     }
 
     fn handle_filter(&self, name: &str, chunk: &mut Vec<u8>) {
@@ -117,46 +155,5 @@ impl Proxy {
         }
 
         Ok(())
-    }
-
-    pub async fn start(&self) {
-        info!(
-            "Proxying {} for service {} at {}",
-            self.inner.service.client_addr, self.inner.service.name, self.inner.service.server_addr
-        );
-
-        loop {
-            let (client, addr) = match self.inner.acceptor.accept().await {
-                Ok((client, addr)) => {
-                    info!("Accepted connection from {}", addr);
-                    (client, addr)
-                }
-                Err(e) => {
-                    warn!("Failed to connect to client: {}", e);
-                    continue;
-                }
-            };
-
-            let server = match self.inner.connector.connect().await {
-                Ok(server) => server,
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to service on {}: {}",
-                        self.inner.service.server_addr, e
-                    );
-                    continue;
-                }
-            };
-
-            let mut connection = Connection { client, server };
-            let proxy = self.clone();
-
-            tokio::spawn(async move {
-                match proxy.handle_connection(&mut connection).await {
-                    Ok(_) => info!("Closed connection from {}", addr),
-                    Err(e) => error!("Error in connection {}: {}", addr, e),
-                };
-            });
-        }
     }
 }
