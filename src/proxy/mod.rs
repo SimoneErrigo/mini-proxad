@@ -2,15 +2,15 @@ mod acceptor;
 mod connector;
 mod stream;
 
-use crate::proxy::stream::ProxyStream;
 use crate::service::Service;
+use crate::{filter::Filter, proxy::stream::ProxyStream};
 use acceptor::Acceptor;
 use connector::Connector;
 use pyo3::Python;
 
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, select, task::JoinHandle, time::timeout};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct Proxy {
@@ -74,16 +74,16 @@ impl Proxy {
             tokio::spawn(async move {
                 match proxy.handle_connection(&mut connection).await {
                     Ok(_) => info!("Closed connection from {}", addr),
-                    Err(e) => error!("Error in connection {}: {}", addr, e),
+                    Err(e) => warn!("Error in connection from {}: {}", addr, e),
                 };
             });
         }
     }
 
-    fn handle_filter(&self, name: &str, chunk: &mut Vec<u8>) {
-        if let Some(filter) = self.inner.service.filter.clone() {
+    async fn handle_filter(filter: &Option<Arc<Filter>>, name: &str, chunk: &mut Vec<u8>) {
+        if let Some(filter) = filter {
             debug!("Running filter {}", name);
-            match filter.apply(name, &chunk) {
+            match filter.apply(name, &chunk).await {
                 Ok(bytes) => {
                     chunk.clear();
                     Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
@@ -106,6 +106,8 @@ impl Proxy {
         let client_timeout = self.inner.service.client_timeout;
         let server_timeout = self.inner.service.server_timeout;
 
+        let filter = self.inner.service.filter.clone();
+
         loop {
             select! {
                 // Client -> Server
@@ -118,7 +120,7 @@ impl Proxy {
                         }
                         Ok(Ok(_)) => {
                             debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
-                            self.handle_filter("client_filter", &mut client_buf);
+                            Self::handle_filter(&filter, "client_filter", &mut client_buf).await;
                             connection.server.write_chunk(&client_buf).await?;
                             client_buf.clear();
                         }
@@ -140,7 +142,7 @@ impl Proxy {
                         }
                         Ok(Ok(_)) => {
                             debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
-                            self.handle_filter("server_filter", &mut server_buf);
+                            Self::handle_filter(&filter, "server_filter", &mut server_buf).await;
                             connection.client.write_chunk(&server_buf).await?;
                             server_buf.clear();
                         }

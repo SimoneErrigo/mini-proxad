@@ -21,8 +21,11 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    #[arg(long = "config", default_value = "proxad.yml")]
+    #[arg(long = "config", required = true)]
     config_path: String,
+
+    #[arg(long, default_value = "true")]
+    watcher: bool,
 }
 
 #[tokio::main]
@@ -59,6 +62,18 @@ async fn main() {
             exit(1);
         }
     };
+
+    if let Some(ref filter) = service.filter {
+        let script = filter.script_path.to_string_lossy();
+        info!("Loaded python filter {}", script);
+
+        if args.watcher {
+            match filter.clone().spawn_watcher().await {
+                Ok(_) => info!("Started watcher for python filter {}", script),
+                Err(e) => error!("Failed to start watcher for {}: {}", script, e),
+            }
+        }
+    }
 
     match Proxy::start(service).await {
         Ok(task) => {

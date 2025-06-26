@@ -1,7 +1,9 @@
 use anyhow::Context;
+use std::ffi::CString;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::filter::Filter;
@@ -43,10 +45,10 @@ impl Service {
             .as_ref()
             .map(|path| {
                 Filter::load_from_file(&path)
-                    .map(|filter| Arc::new(filter))
                     .with_context(|| format!("Failed to load python script at {}", path))
             })
-            .transpose()?;
+            .transpose()?
+            .map(|filter| Arc::new(filter));
 
         Ok(Service {
             name: config.service_name.clone(),
