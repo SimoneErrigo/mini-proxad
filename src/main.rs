@@ -5,12 +5,13 @@ mod tls;
 
 use clap::Parser;
 use std::process::exit;
+use std::sync::Arc;
 use tokio;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::proxy::Proxy;
+use crate::proxy::{Filter, Proxy};
 use crate::service::Service;
 
 #[derive(Debug, Clone, Parser)]
@@ -51,7 +52,7 @@ async fn main() {
         }
     };
 
-    let service = match Service::from_config(&config) {
+    let mut service = match Service::from_config(&config) {
         Ok(service) => {
             info!("Loaded service {}", service.name);
             service
@@ -62,15 +63,32 @@ async fn main() {
         }
     };
 
-    if let Some(ref filter) = service.filter {
-        let script = filter.script_path.to_string_lossy();
-        info!("Loaded python filter {}", script);
+    let filter = config
+        .python_script
+        .as_ref()
+        .map(|path| Filter::load_from_file(&path))
+        .transpose();
 
-        if args.watcher {
-            match filter.clone().spawn_watcher().await {
-                Ok(_) => info!("Started watcher for python filter {}", script),
-                Err(e) => error!("Failed to start watcher for {}: {}", script, e),
+    match filter {
+        Ok(Some(filter)) => {
+            let filter = Arc::new(filter);
+            info!(
+                "Loaded python filter {}",
+                config.python_script.as_ref().unwrap()
+            );
+            service.filter = Some(filter.clone());
+
+            if args.watcher {
+                match filter.spawn_watcher().await {
+                    Ok(_) => info!("Started watcher for python filter"),
+                    Err(e) => error!("Failed to start watcher for filter: {}", e),
+                }
             }
+        }
+        Ok(None) => debug!("No python filter loaded"),
+        Err(e) => {
+            error!("Failed to load python filter: {}", e);
+            exit(1);
         }
     }
 

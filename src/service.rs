@@ -38,16 +38,6 @@ impl Service {
             })
             .transpose()?;
 
-        let filter = config
-            .python_script
-            .as_ref()
-            .map(|path| {
-                Filter::load_from_file(&path)
-                    .with_context(|| format!("Failed to load python script at {}", path))
-            })
-            .transpose()?
-            .map(|filter| Arc::new(filter));
-
         Ok(Service {
             name: config.service_name.clone(),
             client_addr: SocketAddr::new(config.client_ip, config.client_port),
@@ -55,7 +45,7 @@ impl Service {
             client_timeout: config.client_timeout,
             server_timeout: config.server_timeout,
             tls_config,
-            filter,
+            filter: None,
         })
     }
 }
