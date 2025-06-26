@@ -1,0 +1,181 @@
+use crate::proxy::flow::{Flow, History, HistoryChunk};
+use anyhow::Context;
+use futures_util::StreamExt;
+use inotify::{Inotify, WatchMask};
+use pyo3::ffi::c_str;
+use pyo3::types::{PyBytes, PyModule};
+use pyo3::{intern, prelude::*};
+use std::ffi::{CStr, CString};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
+
+#[derive(Debug)]
+pub struct Filter {
+    pub script_path: CString,
+    module: RwLock<Py<PyModule>>,
+}
+
+#[macro_export]
+macro_rules! run_filter {
+    ($filter:expr, $method:ident, $arg:expr) => {
+        if let Some(ref filter) = $filter {
+            filter.$method($arg).await
+        }
+    };
+}
+
+impl Filter {
+    // TODO: Check if filters are actually there
+    pub fn load_from_file(path: &str) -> anyhow::Result<Filter> {
+        let path = CString::new(path)?;
+        let module = Self::load_module(&path)?;
+
+        Ok(Filter {
+            script_path: path,
+            module: RwLock::new(module),
+        })
+    }
+
+    fn load_module(path: &CStr) -> anyhow::Result<Py<PyModule>> {
+        let code = CString::new(fs::read(path.to_str()?)?)?;
+        Python::with_gil(|py| {
+            Ok(PyModule::from_code(py, code.as_c_str(), path, c_str!("filter"))?.into())
+        })
+    }
+
+    fn apply_result(&self, result: anyhow::Result<Py<PyBytes>>, history: &mut History) {
+        match result {
+            Ok(bytes) => {
+                Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
+                    Ok(bytes) => {
+                        debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
+                        history.set_last_chunk(bytes);
+                    }
+                    Err(e) => warn!("Failed to convert bytes: {}", e),
+                });
+            }
+            Err(e) => warn!("Failed to run python filter: {}", e),
+        }
+    }
+
+    // TODO: Unify functions
+    pub async fn on_client_chunk(&self, flow: &mut Flow) {
+        let module = self.module.read().await;
+        let result = Python::with_gil(|py| -> anyhow::Result<Py<PyBytes>> {
+            let module = module.bind(py);
+            let filter_history_name = intern!(py, "client_filter_history");
+
+            if let Some(func) = module.getattr_opt(filter_history_name)? {
+                let args = (
+                    flow.id,
+                    PyBytes::new(py, flow.client_history.last_chunk()),
+                    &flow.client_history.bytes,
+                    &flow.server_history.bytes,
+                );
+
+                debug!(
+                    "Running filter {} for flow {}",
+                    filter_history_name, flow.id
+                );
+                Ok(func.call1(args)?.extract()?)
+            } else {
+                let filter_name = intern!(py, "client_filter");
+                let func = module.getattr(filter_name)?;
+                let args = (flow.id, PyBytes::new(py, flow.client_history.last_chunk()));
+
+                debug!("Running filter {} for flow {}", filter_name, flow.id);
+                Ok(func.call1(args)?.extract()?)
+            }
+        });
+
+        self.apply_result(result, &mut flow.client_history);
+    }
+
+    pub async fn on_server_chunk(&self, flow: &mut Flow) {
+        let module = self.module.read().await;
+        let result = Python::with_gil(|py| -> anyhow::Result<Py<PyBytes>> {
+            let module = module.bind(py);
+            let filter_history_name = intern!(py, "server_filter_history");
+
+            if let Some(func) = module.getattr_opt(filter_history_name)? {
+                let args = (
+                    flow.id,
+                    PyBytes::new(py, flow.server_history.last_chunk()),
+                    &flow.client_history.bytes,
+                    &flow.server_history.bytes,
+                );
+
+                debug!(
+                    "Running filter {} for flow {}",
+                    filter_history_name, flow.id
+                );
+                Ok(func.call1(args)?.extract()?)
+            } else {
+                let filter_name = intern!(py, "server_filter");
+                let func = module.getattr(filter_name)?;
+                let args = (flow.id, PyBytes::new(py, flow.server_history.last_chunk()));
+
+                debug!("Running filter {} for flow {}", filter_name, flow.id);
+                Ok(func.call1(args)?.extract()?)
+            }
+        });
+
+        self.apply_result(result, &mut flow.server_history);
+    }
+
+    pub async fn on_flow_start(&self, flow: &mut Flow) {}
+
+    pub async fn on_flow_close(&self, flow: &mut Flow) {}
+
+    pub async fn spawn_watcher(self: Arc<Self>) -> anyhow::Result<()> {
+        let inotify = Inotify::init().context("Failed to initialize inotify")?;
+
+        let path = self.script_path.to_str()?;
+
+        let parent = PathBuf::from(&path)
+            .parent()
+            .context("Script path has no parent directory")?
+            .to_path_buf();
+
+        let basename = PathBuf::from(&path)
+            .file_name()
+            .context("Failed to get file name")?
+            .to_os_string();
+
+        inotify
+            .watches()
+            .add(&parent, WatchMask::MODIFY | WatchMask::CREATE)
+            .with_context(|| format!("Failed to watch directory {}", parent.to_string_lossy()))?;
+
+        let filter = self.clone();
+        tokio::spawn(async move {
+            let mut buffer = [0; 1024];
+            let mut stream = inotify.into_event_stream(&mut buffer).unwrap();
+            let path = filter.script_path.to_str().unwrap();
+
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(event) if event.name.as_deref().is_some_and(|name| name == basename) => {
+                        info!("Detected change to python filter {}", path);
+
+                        match Self::load_module(&filter.script_path) {
+                            Ok(module) => {
+                                let mut guard = filter.module.write().await;
+                                *guard = module;
+                                info!("Reloaded python filter script");
+                            }
+                            Err(e) => error!("Failed to reload python filter: {}", e),
+                        }
+                    }
+                    Ok(_) => (),
+                    Err(e) => warn!("Inotify error: {}", e),
+                }
+            }
+        });
+
+        Ok(())
+    }
+}

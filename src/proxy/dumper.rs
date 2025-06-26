@@ -86,11 +86,10 @@ impl Dumper {
 
     async fn dump_pcap(mut self, mut format_map: HashMap<String, String>) -> anyhow::Result<()> {
         loop {
-            let deadline = tokio::time::Instant::now() + self.interval;
-
             let mut tmpfile = NamedTempFile::new()?;
             let mut writer = PcapWriter::new(tmpfile.as_file_mut())?;
 
+            let deadline = tokio::time::Instant::now() + self.interval;
             loop {
                 tokio::select! {
                     maybe_msg = self.rx.recv() => {

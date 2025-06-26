@@ -1,12 +1,10 @@
 use anyhow::Context;
-use std::ffi::CString;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 
 use crate::config::Config;
-use crate::filter::Filter;
+use crate::proxy::Filter;
 use crate::tls::TlsConfig;
 
 #[derive(Debug, Clone)]

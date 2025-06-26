@@ -1,22 +1,27 @@
 mod acceptor;
 mod connector;
 mod dumper;
+#[macro_use]
+mod filter;
+mod flow;
 mod stream;
 
 use crate::config::Config;
-use crate::proxy::dumper::DumperChannel;
+use crate::proxy::acceptor::Acceptor;
+use crate::proxy::connector::Connector;
+use crate::proxy::dumper::{Dumper, DumperChannel};
+use crate::proxy::flow::{Flow, FlowStatus};
 use crate::service::Service;
-use crate::{filter::Filter, proxy::stream::ProxyStream};
-use acceptor::Acceptor;
-use anyhow::Context;
-use chrono::Utc;
-use connector::Connector;
-use dumper::Dumper;
-use pyo3::Python;
 
+// TODO: Figure out visibility
+pub use crate::proxy::filter::Filter;
+//use crate::proxy::filter::run_filter;
+
+use anyhow::Context;
+use pyo3::Python;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{io::AsyncWriteExt, select, task::JoinHandle, time::timeout};
+use tokio::{io::AsyncWriteExt, select, task::JoinHandle};
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
@@ -30,23 +35,6 @@ struct ProxyInner {
     connector: Connector,
     dumper: Option<DumperChannel>,
 }
-
-pub struct Connection {
-    pub client: ProxyStream,
-    pub server: ProxyStream,
-}
-
-// TODO
-//pub struct Chunk {
-//    range: (usize, usize),
-//    timestamp: Utc,
-//}
-//
-//pub struct History {
-//    buffer: Vec<u8>,
-//    client_chunks: Vec<Chunk>,
-//    server_chunks: Vec<Chunk>,
-//}
 
 impl Proxy {
     pub async fn start(service: Service, config: &Config) -> anyhow::Result<JoinHandle<()>> {
@@ -78,7 +66,7 @@ impl Proxy {
         loop {
             let (client, addr) = match self.inner.acceptor.accept().await {
                 Ok((client, addr)) => {
-                    info!("Accepted connection from {}", addr);
+                    info!("Accepted flow from {}", addr);
                     (client, addr)
                 }
                 Err(e) => {
@@ -98,34 +86,15 @@ impl Proxy {
                 }
             };
 
-            let mut connection = Connection { client, server };
+            let mut flow = Flow::new(client, server);
             let proxy = self.clone();
 
             tokio::spawn(async move {
-                match proxy.handle_connection(&mut connection).await {
-                    Ok(_) => info!("Closed connection from {}", addr),
-                    Err(e) => warn!("Error in connection from {}: {}", addr, e),
+                match proxy.handle_flow(&mut flow).await {
+                    Ok(_) => info!("Closed flow from {}", addr),
+                    Err(e) => warn!("Error in flow from {}: {}", addr, e),
                 };
             });
-        }
-    }
-
-    async fn handle_filter(filter: &Option<Arc<Filter>>, name: &str, chunk: &mut Vec<u8>) {
-        if let Some(filter) = filter {
-            debug!("Running filter {}", name);
-            match filter.apply(name, &chunk).await {
-                Ok(bytes) => {
-                    chunk.clear();
-                    Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
-                        Ok(bytes) => {
-                            debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
-                            chunk.extend_from_slice(bytes);
-                        }
-                        Err(e) => warn!("Failed to convert bytes: {}", e),
-                    });
-                }
-                Err(e) => warn!("Failed to run filter {}: {}", name, e),
-            }
         }
     }
 
@@ -142,67 +111,101 @@ impl Proxy {
         }
     }
 
-    async fn handle_connection(&self, connection: &mut Connection) -> anyhow::Result<()> {
-        let mut client_buf = vec![];
-        let mut server_buf = vec![];
-
+    async fn handle_flow(&self, flow: &mut Flow) -> anyhow::Result<()> {
         let client_timeout = self.inner.service.client_timeout;
-        let client_addr = self.inner.service.client_addr;
-
         let server_timeout = self.inner.service.server_timeout;
-        let server_addr = self.inner.service.server_addr;
-
         let filter = self.inner.service.filter.clone();
+
+        run_filter!(filter, on_flow_start, flow);
 
         loop {
             select! {
                 // Client -> Server
-                client_read = timeout(client_timeout, connection.client.read_chunk(&mut client_buf)) => {
-                    match client_read {
-                        Ok(Ok(0)) => {
+                client_status = Flow::read_chunk(&mut flow.client, &mut flow.client_history, client_timeout) => {
+                    match client_status? {
+                        FlowStatus::Read => {
+                            debug!(
+                                "Client → Server: {:?}",
+                                String::from_utf8_lossy(flow.client_history.last_chunk())
+                            );
+
+                            run_filter!(filter, on_client_chunk, flow);
+
+                            Flow::write_last_chunk(
+                                &mut flow.server,
+                                &mut flow.client_history,
+                                client_timeout,
+                            )
+                            .await?;
+
+                            //flow.server.write_chunk(&chunk).await?;
+                            //self.dump_chunk(client_addr, server_addr, std::mem::take(&mut client_buf)).await?;
+                        }
+                        FlowStatus::Closed => {
                             debug!("Client sent eof");
-                            connection.server.shutdown().await?;
+                            flow.server.shutdown().await?;
                             break;
                         }
-                        Ok(Ok(_)) => {
-                            debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
-                            Self::handle_filter(&filter, "client_filter", &mut client_buf).await;
-
-                            connection.server.write_chunk(&client_buf).await?;
-                            self.dump_chunk(client_addr, server_addr, std::mem::take(&mut client_buf)).await?;
+                        FlowStatus::Timeout => {
+                            debug!("Client timeout elapsed");
+                            break;
                         }
-                        Ok(Err(e)) => return Err(e.into()),
-                        Err(_) => {
-                            debug!("Client reached timeout");
+                        FlowStatus::HistoryTooBig => {
+                            debug!("Client history size reached limit, flow terminated");
                             break;
                         }
                     }
                 }
 
                 // Server -> Client
-                server_read = timeout(server_timeout, connection.server.read_chunk(&mut server_buf)) => {
-                    match server_read {
-                        Ok(Ok(0)) => {
+                server_status = Flow::read_chunk(&mut flow.server, &mut flow.server_history, server_timeout) => {
+                    match server_status? {
+                        FlowStatus::Read => {
+                            debug!(
+                                "Server → Client: {:?}",
+                                String::from_utf8_lossy(flow.server_history.last_chunk())
+                            );
+
+                            run_filter!(filter, on_server_chunk, flow);
+
+                            Flow::write_last_chunk(
+                                &mut flow.client,
+                                &mut flow.server_history,
+                                server_timeout,
+                            )
+                            .await?;
+
+                            //flow.client.write_chunk(&chunk).await?;
+                            //self.dump_chunk(server_addr, client_addr, std::mem::take(&mut server_buf)).await?;
+                        }
+                        FlowStatus::Closed => {
                             debug!("Server sent eof");
-                            connection.client.shutdown().await?;
+                            flow.client.shutdown().await?;
                             break;
                         }
-                        Ok(Ok(_)) => {
-                            debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
-                            Self::handle_filter(&filter, "server_filter", &mut server_buf).await;
-
-                            connection.client.write_chunk(&server_buf).await?;
-                            self.dump_chunk(server_addr, client_addr, std::mem::take(&mut server_buf)).await?;
+                        FlowStatus::Timeout => {
+                            debug!("Server timeout elapsed");
+                            break;
                         }
-                        Ok(Err(e)) => return Err(e.into()),
-                        Err(_) => {
-                            debug!("Client reached timeout");
+                        FlowStatus::HistoryTooBig => {
+                            debug!("Server history size reached limit, flow terminated");
                             break;
                         }
                     }
                 }
             }
         }
+
+        run_filter!(filter, on_flow_close, flow);
+
+        debug!(
+            client_history = flow.client_history.bytes.len(),
+            client_chunks = flow.client_history.chunks.len(),
+            server_history = flow.server_history.bytes.len(),
+            server_chunks = flow.server_history.chunks.len(),
+            "History size for flow {}",
+            flow.id,
+        );
 
         Ok(())
     }

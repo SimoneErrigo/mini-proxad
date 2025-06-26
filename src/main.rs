@@ -1,5 +1,4 @@
 mod config;
-mod filter;
 mod proxy;
 mod service;
 mod tls;
