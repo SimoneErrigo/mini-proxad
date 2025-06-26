@@ -75,7 +75,7 @@ async fn main() {
         }
     }
 
-    match Proxy::start(service).await {
+    match Proxy::start(service, &config).await {
         Ok(task) => {
             info!(
                 "Started Proxad {} -> {}",

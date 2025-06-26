@@ -35,6 +35,15 @@ pub struct Config {
 
     #[serde(default, rename = "script_path")]
     pub python_script: Option<String>,
+
+    pub dump_enabled: bool,
+
+    pub dump_path: Option<String>,
+
+    pub dump_format: Option<String>,
+
+    #[serde(with = "humantime_serde")]
+    pub dump_interval: Option<Duration>,
 }
 
 fn default_timeout() -> Duration {

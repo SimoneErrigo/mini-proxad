@@ -1,13 +1,20 @@
 mod acceptor;
 mod connector;
+mod dumper;
 mod stream;
 
+use crate::config::Config;
+use crate::proxy::dumper::DumperChannel;
 use crate::service::Service;
 use crate::{filter::Filter, proxy::stream::ProxyStream};
 use acceptor::Acceptor;
+use anyhow::Context;
+use chrono::Utc;
 use connector::Connector;
+use dumper::Dumper;
 use pyo3::Python;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, select, task::JoinHandle, time::timeout};
 use tracing::{debug, info, warn};
@@ -21,6 +28,7 @@ struct ProxyInner {
     service: Service,
     acceptor: Acceptor,
     connector: Connector,
+    dumper: Option<DumperChannel>,
 }
 
 pub struct Connection {
@@ -28,16 +36,38 @@ pub struct Connection {
     pub server: ProxyStream,
 }
 
+// TODO
+//pub struct Chunk {
+//    range: (usize, usize),
+//    timestamp: Utc,
+//}
+//
+//pub struct History {
+//    buffer: Vec<u8>,
+//    client_chunks: Vec<Chunk>,
+//    server_chunks: Vec<Chunk>,
+//}
+
 impl Proxy {
-    pub async fn start(service: Service) -> anyhow::Result<JoinHandle<()>> {
+    pub async fn start(service: Service, config: &Config) -> anyhow::Result<JoinHandle<()>> {
         let acceptor = Acceptor::new(&service).await?;
         let connector = Connector::new(&service).await?;
+        let dumper = if config.dump_enabled {
+            Some(
+                Dumper::start(&service, config)
+                    .await
+                    .context("Failed to start dumper")?,
+            )
+        } else {
+            None
+        };
 
         let proxy = Proxy {
             inner: Arc::new(ProxyInner {
                 service,
                 acceptor,
                 connector,
+                dumper,
             }),
         };
 
@@ -99,12 +129,28 @@ impl Proxy {
         }
     }
 
+    async fn dump_chunk(
+        &self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        chunk: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        if let Some(ref channel) = self.inner.dumper {
+            Dumper::write_chunk(channel, src, dst, chunk).await
+        } else {
+            Ok(())
+        }
+    }
+
     async fn handle_connection(&self, connection: &mut Connection) -> anyhow::Result<()> {
         let mut client_buf = vec![];
         let mut server_buf = vec![];
 
         let client_timeout = self.inner.service.client_timeout;
+        let client_addr = self.inner.service.client_addr;
+
         let server_timeout = self.inner.service.server_timeout;
+        let server_addr = self.inner.service.server_addr;
 
         let filter = self.inner.service.filter.clone();
 
@@ -121,8 +167,9 @@ impl Proxy {
                         Ok(Ok(_)) => {
                             debug!("Client → Server: {:?}", String::from_utf8_lossy(&client_buf));
                             Self::handle_filter(&filter, "client_filter", &mut client_buf).await;
+
                             connection.server.write_chunk(&client_buf).await?;
-                            client_buf.clear();
+                            self.dump_chunk(client_addr, server_addr, std::mem::take(&mut client_buf)).await?;
                         }
                         Ok(Err(e)) => return Err(e.into()),
                         Err(_) => {
@@ -143,8 +190,9 @@ impl Proxy {
                         Ok(Ok(_)) => {
                             debug!("Server → Client: {:?}", String::from_utf8_lossy(&server_buf));
                             Self::handle_filter(&filter, "server_filter", &mut server_buf).await;
+
                             connection.client.write_chunk(&server_buf).await?;
-                            server_buf.clear();
+                            self.dump_chunk(server_addr, client_addr, std::mem::take(&mut server_buf)).await?;
                         }
                         Ok(Err(e)) => return Err(e.into()),
                         Err(_) => {
