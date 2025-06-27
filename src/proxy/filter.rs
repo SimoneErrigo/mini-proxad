@@ -1,12 +1,14 @@
 use crate::proxy::flow::{Flow, History};
 use anyhow::Context;
+use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use pyo3::ffi::c_str;
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::types::{PyBytes, PyEllipsis, PyModule};
 use pyo3::{intern, prelude::*};
 use std::ffi::{CStr, CString};
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,21 +16,12 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
-const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(1);
+const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub struct Filter {
     pub script_path: CString,
     module: RwLock<Py<PyModule>>,
-}
-
-#[macro_export]
-macro_rules! run_filter {
-    ($filter:expr, $method:ident, $arg:expr) => {
-        if let Some(ref filter) = $filter {
-            filter.$method($arg).await
-        }
-    };
 }
 
 impl Filter {
@@ -50,89 +43,101 @@ impl Filter {
         })
     }
 
-    fn apply_result(&self, result: anyhow::Result<Py<PyBytes>>, history: &mut History) {
+    fn apply_result(
+        &self,
+        result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>>,
+        history: &mut History,
+    ) -> ControlFlow<()> {
         match result {
-            Ok(bytes) => {
+            // Kill connection on ellipses
+            Ok(Either::Right(_)) => return ControlFlow::Break(()),
+            // Replace last chunk on bytes
+            Ok(Either::Left(Some(bytes))) => {
                 Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
                     Ok(bytes) => {
-                        debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
+                        //debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
                         history.set_last_chunk(bytes);
                     }
                     Err(e) => warn!("Failed to convert bytes: {}", e),
                 });
             }
+            // Do nothing on none
+            Ok(Either::Left(None)) => (),
             Err(e) => warn!("Failed to run python filter: {}", e),
-        }
+        };
+        ControlFlow::Continue(())
     }
 
     // TODO: Unify functions
-    pub async fn on_client_chunk(&self, flow: &mut Flow) {
+    pub async fn on_client_chunk(&self, flow: &mut Flow) -> ControlFlow<()> {
         let module = self.module.read().await;
-        let result = Python::with_gil(|py| -> anyhow::Result<Py<PyBytes>> {
-            let module = module.bind(py);
-            let filter_history_name = intern!(py, "client_filter_history");
+        let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
+            Python::with_gil(|py| {
+                let module = module.bind(py);
+                let filter_history_name = intern!(py, "client_filter_history");
 
-            if let Some(func) = module.getattr_opt(filter_history_name)? {
-                let args = (
-                    flow.id,
-                    PyBytes::new(py, flow.client_history.last_chunk()),
-                    &flow.client_history.bytes,
-                    &flow.server_history.bytes,
-                );
+                if let Some(func) = module.getattr_opt(filter_history_name)? {
+                    let args = (
+                        flow.id,
+                        PyBytes::new(py, flow.client_history.last_chunk()),
+                        &flow.client_history.bytes,
+                        &flow.server_history.bytes,
+                    );
 
-                debug!(
-                    "Running filter {} for flow {}",
-                    filter_history_name, flow.id
-                );
-                Ok(func.call1(args)?.extract()?)
-            } else {
-                let filter_name = intern!(py, "client_filter");
-                let func = module.getattr(filter_name)?;
-                let args = (flow.id, PyBytes::new(py, flow.client_history.last_chunk()));
+                    debug!(
+                        "Running filter {} for flow {}",
+                        filter_history_name, flow.id
+                    );
+                    Ok(func.call1(args)?.extract()?)
+                } else {
+                    let filter_name = intern!(py, "client_filter");
+                    let func = module.getattr(filter_name)?;
+                    let args = (flow.id, PyBytes::new(py, flow.client_history.last_chunk()));
 
-                debug!("Running filter {} for flow {}", filter_name, flow.id);
-                Ok(func.call1(args)?.extract()?)
-            }
-        });
+                    debug!("Running filter {} for flow {}", filter_name, flow.id);
+                    Ok(func.call1(args)?.extract()?)
+                }
+            });
 
-        self.apply_result(result, &mut flow.client_history);
+        self.apply_result(result, &mut flow.client_history)
     }
 
-    pub async fn on_server_chunk(&self, flow: &mut Flow) {
+    pub async fn on_server_chunk(&self, flow: &mut Flow) -> ControlFlow<()> {
         let module = self.module.read().await;
-        let result = Python::with_gil(|py| -> anyhow::Result<Py<PyBytes>> {
-            let module = module.bind(py);
-            let filter_history_name = intern!(py, "server_filter_history");
+        let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
+            Python::with_gil(|py| {
+                let module = module.bind(py);
+                let filter_history_name = intern!(py, "server_filter_history");
 
-            if let Some(func) = module.getattr_opt(filter_history_name)? {
-                let args = (
-                    flow.id,
-                    PyBytes::new(py, flow.server_history.last_chunk()),
-                    &flow.client_history.bytes,
-                    &flow.server_history.bytes,
-                );
+                if let Some(func) = module.getattr_opt(filter_history_name)? {
+                    let args = (
+                        flow.id,
+                        PyBytes::new(py, flow.server_history.last_chunk()),
+                        &flow.client_history.bytes,
+                        &flow.server_history.bytes,
+                    );
 
-                debug!(
-                    "Running filter {} for flow {}",
-                    filter_history_name, flow.id
-                );
-                Ok(func.call1(args)?.extract()?)
-            } else {
-                let filter_name = intern!(py, "server_filter");
-                let func = module.getattr(filter_name)?;
-                let args = (flow.id, PyBytes::new(py, flow.server_history.last_chunk()));
+                    debug!(
+                        "Running filter {} for flow {}",
+                        filter_history_name, flow.id
+                    );
+                    Ok(func.call1(args)?.extract()?)
+                } else {
+                    let filter_name = intern!(py, "server_filter");
+                    let func = module.getattr(filter_name)?;
+                    let args = (flow.id, PyBytes::new(py, flow.server_history.last_chunk()));
 
-                debug!("Running filter {} for flow {}", filter_name, flow.id);
-                Ok(func.call1(args)?.extract()?)
-            }
-        });
+                    debug!("Running filter {} for flow {}", filter_name, flow.id);
+                    Ok(func.call1(args)?.extract()?)
+                }
+            });
 
-        self.apply_result(result, &mut flow.server_history);
+        self.apply_result(result, &mut flow.server_history)
     }
 
-    pub async fn on_flow_start(&self, flow: &mut Flow) {}
+    pub async fn on_flow_start(&self, _flow: &mut Flow) {}
 
-    pub async fn on_flow_close(&self, flow: &mut Flow) {}
+    pub async fn on_flow_close(&self, _flow: &mut Flow) {}
 
     pub async fn spawn_watcher(self: Arc<Self>) -> anyhow::Result<()> {
         let inotify = Inotify::init().context("Failed to initialize inotify")?;

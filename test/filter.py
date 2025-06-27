@@ -21,16 +21,19 @@ except ImportError:
 
 def server_filter_history(
     id: uuid.UUID, chunk: bytes, client_history: bytes, server_history: bytes
-) -> bytes:
+) -> bytes | None | types.EllipsisType:
     # print("CLIENT", client_history)
     # print("SERVER", server_history)
-    return chunk.replace(b"PING", b"PONG")
+    if b"PING" in chunk:
+        return chunk.replace(b"PING", b"PONG")
+
+    if b"DIE" in chunk:
+        return ...
 
 
-def client_filter(id: uuid.UUID, chunk: bytes) -> bytes:
+def client_filter(id: uuid.UUID, chunk: bytes) -> bytes | None | types.EllipsisType:
     global counter
     if b"EVIL" in chunk:
         persist.counter += 1
         print(f"flow {id} is evil (number {persist.counter})")
-
     return chunk

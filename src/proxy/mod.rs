@@ -13,11 +13,10 @@ use crate::proxy::dumper::{Dumper, DumperChannel};
 use crate::proxy::flow::{Flow, FlowStatus};
 use crate::service::Service;
 
-// TODO: Figure out visibility
 pub use crate::proxy::filter::Filter;
-//use crate::proxy::filter::run_filter;
 
 use anyhow::Context;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, warn};
@@ -32,6 +31,16 @@ struct ProxyInner {
     acceptor: Acceptor,
     connector: Connector,
     dumper: Option<DumperChannel>,
+}
+
+macro_rules! run_filter {
+    ($filter:expr, $method:ident, $arg:expr, $on_break:block) => {
+        if let Some(ref filter) = $filter {
+            if let ControlFlow::Break(_) = filter.$method($arg).await {
+                $on_break
+            }
+        }
+    };
 }
 
 impl Proxy {
@@ -112,7 +121,7 @@ impl Proxy {
         let server_timeout = self.inner.service.server_timeout;
         let filter = self.inner.service.filter.clone();
 
-        run_filter!(filter, on_flow_start, flow);
+        //run_filter!(filter, on_flow_start, flow, {});
 
         loop {
             select! {
@@ -125,7 +134,10 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.client_history.last_chunk())
                             );
 
-                            run_filter!(filter, on_client_chunk, flow);
+                            run_filter!(filter, on_client_chunk, flow, {
+                                info!("Python client filter killed flow {}", flow.id);
+                                break;
+                            });
 
                             Flow::write_last_chunk(
                                 flow.server.as_mut().unwrap(),
@@ -158,7 +170,10 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.server_history.last_chunk())
                             );
 
-                            run_filter!(filter, on_server_chunk, flow);
+                            run_filter!(filter, on_server_chunk, flow, {
+                                info!("Python server filter killed flow {}", flow.id);
+                                break;
+                            });
 
                             Flow::write_last_chunk(
                                 flow.client.as_mut().unwrap(),
@@ -184,8 +199,9 @@ impl Proxy {
             }
         }
 
-        run_filter!(filter, on_flow_close, flow);
+        //run_filter!(filter, on_flow_close, flow, {});
 
+        // Always close the connection
         flow.close().await?;
 
         debug!(
