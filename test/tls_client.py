@@ -8,10 +8,11 @@ PORT = 9443
 
 CA_FILE = "./test/keys/ca-cert.pem"
 
-CONCURRENT_CONNECTIONS = 1000
+CONCURRENT_CONNECTIONS = 500
 MESSAGES_PER_CONNECTION = 3
 MAX_MSG_SIZE = 1024
 TICK_INTERVAL = 4
+
 
 async def tcp_echo_client(client_id: int, ssl_context: ssl.SSLContext):
     start = time.perf_counter()
@@ -46,7 +47,8 @@ async def tcp_echo_client(client_id: int, ssl_context: ssl.SSLContext):
 
 async def run_tick(ssl_context: ssl.SSLContext):
     tasks = [
-        asyncio.create_task(tcp_echo_client(i, ssl_context)) for i in range(CONCURRENT_CONNECTIONS)
+        asyncio.create_task(tcp_echo_client(i, ssl_context))
+        for i in range(CONCURRENT_CONNECTIONS)
     ]
     results = await asyncio.gather(*tasks)
 

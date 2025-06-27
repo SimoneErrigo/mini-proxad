@@ -5,14 +5,14 @@ use etherparse::PacketBuilder;
 use pcap_file::pcap::{PcapPacket, PcapWriter};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::sync::mpsc;
-use std::{fs::File, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tempfile::NamedTempFile;
-use tokio::fs;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::proxy::flow::Flow;
 use crate::{config::Config, service::Service};
@@ -33,7 +33,7 @@ impl Dumper {
     pub async fn start(service: &Service, config: &Config) -> anyhow::Result<DumperChannel> {
         let path = PathBuf::from(config.dump_path.clone().context("Dump path is required")?);
 
-        match fs::metadata(&path).await {
+        match tokio::fs::metadata(&path).await {
             Ok(metadata) => {
                 if !metadata.is_dir() {
                     Err(anyhow::anyhow!("Expected a directory for pcaps"))?
@@ -115,17 +115,31 @@ impl Dumper {
             let filename = strfmt::strfmt(&self.format, &format_map)?;
 
             let path = self.path.join(filename);
-            match tmpfile.persist(&path) {
+            match Self::save_pcap(tmpfile, &path) {
                 Ok(_) => info!("Dumped pcaps to {}", path.to_string_lossy()),
                 Err(e) => error!("Failed to save pcaps to {}: {}", path.to_string_lossy(), e),
             }
         }
     }
 
-    pub fn write_tcp_flow(
-        writer: &mut PcapWriter<&mut File>,
-        flow: &Flow,
-    ) -> anyhow::Result<usize> {
+    fn save_pcap(tmpfile: NamedTempFile, path: &std::path::Path) -> anyhow::Result<()> {
+        match tmpfile.persist(&path) {
+            Ok(_) => (),
+            Err(e) => {
+                // Non atomic copy if the error is EXDEV
+                if e.error.raw_os_error() == Some(18) {
+                    let temp_path = e.file.path();
+                    fs::copy(&temp_path, path)?;
+                    fs::remove_file(&temp_path)?;
+                } else {
+                    Err(e.error)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_tcp_flow(writer: &mut PcapWriter<&mut File>, flow: &Flow) -> anyhow::Result<usize> {
         let src_ip = match flow.client_addr.ip() {
             std::net::IpAddr::V4(ip) => ip,
             _ => anyhow::bail!("Only IPv4 supported"),

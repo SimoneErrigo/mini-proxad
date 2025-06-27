@@ -14,6 +14,8 @@ pub struct Service {
     pub server_addr: SocketAddr,
     pub client_timeout: Duration,
     pub server_timeout: Duration,
+    pub client_max_history: usize,
+    pub server_max_history: usize,
     pub tls_config: Option<TlsConfig>,
     pub filter: Option<Arc<Filter>>,
 }
@@ -44,6 +46,8 @@ impl Service {
             server_addr: SocketAddr::new(config.server_ip, config.server_port),
             client_timeout: config.client_timeout,
             server_timeout: config.server_timeout,
+            client_max_history: config.client_max_history.as_u64() as usize,
+            server_max_history: config.server_max_history.as_u64() as usize,
             tls_config,
             filter: None,
         })

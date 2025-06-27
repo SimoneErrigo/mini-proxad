@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1"
+byte-unit = { version = "5.1.6", features = ["serde"] }
 chrono = "0.4.41"
 clap = { version = "4.5.40", features = ["derive"] }
 either = "1.15.0"
@@ -35,4 +36,3 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 webpki-roots = "1.0.1"
-

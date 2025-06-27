@@ -29,13 +29,17 @@ impl TlsConfig {
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
 
-        let server = ServerConfig::builder()
+        let mut server = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs.clone(), key.clone_key())?;
+
+        server.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
 
         let mut client = ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_client_auth_cert(certs, key)?;
+
+        client.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
 
         client.dangerous().set_certificate_verifier(Arc::new(
             danger::NoCertificateVerification::new(provider::default_provider()),

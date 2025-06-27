@@ -7,9 +7,6 @@ use uuid::Uuid;
 use crate::proxy::stream::ProxyStream;
 use std::time::Duration;
 
-// TODO: Tweak this accordingly, for now 1MB
-const MAX_HISTORY_SIZE: usize = 1 << 20;
-
 pub enum FlowStatus {
     Read,
     Closed,
@@ -33,18 +30,20 @@ pub struct HistoryChunk {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Default)]
 pub struct History {
     pub bytes: Vec<u8>,
     pub chunks: Vec<HistoryChunk>,
+    pub max_size: usize,
 }
 
 impl Flow {
     pub fn new(
         client: ProxyStream,
         client_addr: SocketAddr,
+        client_max_history: usize,
         server: ProxyStream,
         server_addr: SocketAddr,
+        server_max_history: usize,
     ) -> Flow {
         Flow {
             id: Uuid::new_v4(),
@@ -52,8 +51,8 @@ impl Flow {
             server: Some(server),
             client_addr,
             server_addr,
-            client_history: History::default(),
-            server_history: History::default(),
+            client_history: History::new(client_max_history),
+            server_history: History::new(server_max_history),
         }
     }
 
@@ -68,7 +67,7 @@ impl Flow {
         match time::timeout(timeout, future).await {
             Ok(Ok(0)) => Ok(FlowStatus::Closed),
             Ok(Ok(n)) => {
-                if start + n >= MAX_HISTORY_SIZE {
+                if start + n >= history.max_size {
                     Ok(FlowStatus::HistoryTooBig)
                 } else {
                     history.chunks.push(HistoryChunk {
@@ -103,6 +102,14 @@ impl Flow {
 }
 
 impl History {
+    pub fn new(max_size: usize) -> History {
+        History {
+            bytes: vec![],
+            chunks: vec![],
+            max_size,
+        }
+    }
+
     pub fn last_chunk(&self) -> &[u8] {
         let range = self
             .chunks

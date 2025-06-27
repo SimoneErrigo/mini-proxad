@@ -1,3 +1,4 @@
+use byte_unit::{Byte, Unit};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
@@ -21,6 +22,12 @@ pub struct Config {
 
     #[serde(default = "default_timeout", with = "humantime_serde")]
     pub server_timeout: Duration,
+
+    #[serde(default = "default_max_history")]
+    pub client_max_history: Byte,
+
+    #[serde(default = "default_max_history")]
+    pub server_max_history: Byte,
 
     pub tls_enabled: bool,
 
@@ -48,6 +55,10 @@ pub struct Config {
 
 fn default_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_max_history() -> Byte {
+    Byte::from_u64_with_unit(512, Unit::MiB).unwrap()
 }
 
 impl Config {

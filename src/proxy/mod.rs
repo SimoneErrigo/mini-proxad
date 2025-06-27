@@ -96,8 +96,10 @@ impl Proxy {
             let mut flow = Flow::new(
                 client,
                 self.inner.service.client_addr,
+                self.inner.service.client_max_history,
                 server,
                 self.inner.service.server_addr,
+                self.inner.service.server_max_history,
             );
             let proxy = self.clone();
 
@@ -155,7 +157,7 @@ impl Proxy {
                             break;
                         }
                         FlowStatus::HistoryTooBig => {
-                            debug!("Client history size reached limit, flow terminated");
+                            warn!("Client history size reached limit, flow terminated");
                             break;
                         }
                     }
@@ -191,7 +193,7 @@ impl Proxy {
                             break;
                         }
                         FlowStatus::HistoryTooBig => {
-                            debug!("Server history size reached limit, flow terminated");
+                            warn!("Server history size reached limit, flow terminated");
                             break;
                         }
                     }

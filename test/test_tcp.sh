@@ -1,3 +1,3 @@
 #!/bin/sh
 
-cargo run -- --config ./test/test_tcp.yml
+cargo run -- --config ./test/test_tcp.yml "$@"
