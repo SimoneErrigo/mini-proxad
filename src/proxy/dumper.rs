@@ -59,11 +59,14 @@ impl Dumper {
 
         let format_map = HashMap::from([
             ("service".into(), service.name.clone()),
-            ("timestamp".into(), "0".into()),
             ("client_ip".into(), service.client_addr.ip().to_string()),
             ("client_port".into(), service.client_addr.port().to_string()),
             ("server_ip".into(), service.server_addr.ip().to_string()),
             ("server_port".into(), service.server_addr.port().to_string()),
+            ("from_ip".into(), service.client_addr.ip().to_string()),
+            ("from_port".into(), service.client_addr.port().to_string()),
+            ("to_ip".into(), service.server_addr.ip().to_string()),
+            ("to_port".into(), service.server_addr.port().to_string()),
         ]);
 
         let (tx, rx) = mpsc::channel();

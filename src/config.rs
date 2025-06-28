@@ -10,12 +10,16 @@ use std::time::Duration;
 pub struct Config {
     pub service_name: String,
 
+    #[serde(alias = "from_ip")]
     pub client_ip: IpAddr,
 
+    #[serde(alias = "from_port")]
     pub client_port: u16,
 
+    #[serde(alias = "to_ip")]
     pub server_ip: IpAddr,
 
+    #[serde(alias = "to_port")]
     pub server_port: u16,
 
     #[serde(default = "default_timeout", with = "humantime_serde")]

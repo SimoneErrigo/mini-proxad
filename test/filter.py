@@ -29,6 +29,14 @@ FilterOutput = bytes | None | types.EllipsisType
 FilterType = typing.Callable[[uuid.UUID, bytes, bytes, bytes], FilterOutput]
 
 
+# HTTP session tracking
+TRACK_HTTP_SESSION = False
+SESSION_COOKIE_NAME = "session"
+SESSION_TTL = 30  # seconds
+SESSION_LIMIT = 4000
+ALL_SESSIONS = TTLCache(maxsize=SESSION_LIMIT, ttl=SESSION_TTL)
+
+
 # Utilities functions start
 
 
@@ -43,16 +51,34 @@ FLAG_REGEX = regex(rb"[A-Z0-9]{31}=")
 FLAG_REPLACEMENT = "GRAZIEDARIO"
 
 
-# Custom filters start
+ALL_REGEXES = [rb"evil"]
+COMPILED_REGEXES = [regex(pattern) for pattern in ALL_REGEXES]
+
+
+def check_is_evil(id, chunk, client_history, server_history):
+    return False
 
 
 def replace_flag(id, chunk, client_history, server_history):
     return re.sub(FLAG_REGEX, FLAG_REPLACEMENT.encode(), chunk)
 
 
+def replace_when_evil(id, chunk, client_history, server_history):
+    if check_is_evil(id, chunk, client_history, server_history):
+        return replace_flag(id, chunk, client_history, server_history)
+
+
+def kill_when_evil(id, chunk, client_history, server_history):
+    if check_is_evil(id, chunk, client_history, server_history):
+        return ...
+
+
+# Custom filters start
+
+
 CLIENT_FILTERS: list[FilterType] = []
 
-SERVER_FILTERS: list[FilterType] = [replace_flag]
+SERVER_FILTERS: list[FilterType] = []
 
 # Custom filters end
 
