@@ -1,4 +1,4 @@
-use crate::proxy::flow::{Flow, History};
+use crate::flow::{Flow, History};
 use anyhow::Context;
 use either::Either;
 use futures_util::StreamExt;

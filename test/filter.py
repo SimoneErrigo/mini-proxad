@@ -1,39 +1,87 @@
-import uuid
+import re, uuid
+from cachetools import TTLCache
+import types, typing
 import sys
-import types
 
 
-def init_state(m):
-    m.counter = 0
+# Use a fake python module to hold state between file reloads
+def make_state() -> types.ModuleType:
+    state = types.ModuleType("proxy_state")
+    return state
 
 
-try:
-    import persist
+# Import the fake python module
+# Instead of using global variables use state.VAR
+state = sys.modules.setdefault("proxy_state", make_state())
 
-    print("Imported persistent state")
 
-except ImportError:
-    persist = types.ModuleType("persist")
-    sys.modules["persist"] = persist
-    print("Stored persistent state")
-    init_state(persist)
+# Filters should return one the following values
+# bytes          -> the chunk will be replaced
+# None           -> same as returning the original chunk
+# Ellipsis (...) -> kill the flow
+FilterOutput = bytes | None | types.EllipsisType
+
+# Filter will receive as arguments the values
+# 1 parameter -> flow id (UUID4)
+# 2 parameter -> current chunk (bytes)
+# 3 parameter -> client history (bytes)
+# 4 parameter -> server history (bytes)
+FilterType = typing.Callable[[uuid.UUID, bytes, bytes, bytes], FilterOutput]
+
+
+# Utilities functions start
+
+
+# Compile a regex
+def regex(pattern: bytes):
+    return re.compile(pattern)
+
+
+# Utilities functions end
+
+FLAG_REGEX = regex(rb"[A-Z0-9]{31}=")
+FLAG_REPLACEMENT = "GRAZIEDARIO"
+
+
+# Custom filters start
+
+
+def replace_flag(id, chunk, client_history, server_history):
+    return re.sub(FLAG_REGEX, FLAG_REPLACEMENT.encode(), chunk)
+
+
+CLIENT_FILTERS: list[FilterType] = []
+
+SERVER_FILTERS: list[FilterType] = [replace_flag]
+
+# Custom filters end
+
+
+# Generic filter runner
+def run_filters(
+    id: uuid.UUID,
+    chunk: bytes,
+    client_history: bytes,
+    server_history: bytes,
+    filters: list[FilterType],
+) -> FilterOutput:
+    current = chunk
+    for f in filters:
+        outcome = f(id, current, client_history, server_history)
+        if outcome is ...:
+            return ...
+        if outcome is not None:
+            current = outcome
+    return current
 
 
 def server_filter_history(
     id: uuid.UUID, chunk: bytes, client_history: bytes, server_history: bytes
-) -> bytes | None | types.EllipsisType:
-    # print("CLIENT", client_history)
-    # print("SERVER", server_history)
-    if b"PING" in chunk:
-        return chunk.replace(b"PING", b"PONG")
-
-    if b"DIE" in chunk:
-        return ...
+) -> FilterOutput:
+    return run_filters(id, chunk, client_history, server_history, SERVER_FILTERS)
 
 
-def client_filter(id: uuid.UUID, chunk: bytes) -> bytes | None | types.EllipsisType:
-    global counter
-    if b"EVIL" in chunk:
-        persist.counter += 1
-        print(f"flow {id} is evil (number {persist.counter})")
-    return chunk
+def client_filter_history(
+    id: uuid.UUID, chunk: bytes, client_history: bytes, server_history: bytes
+) -> FilterOutput:
+    return run_filters(id, chunk, client_history, server_history, CLIENT_FILTERS)

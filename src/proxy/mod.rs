@@ -2,13 +2,12 @@ mod acceptor;
 mod connector;
 mod dumper;
 mod filter;
-mod flow;
 
 use crate::config::Config;
+use crate::flow::{Flow, FlowStatus};
 use crate::proxy::acceptor::Acceptor;
 use crate::proxy::connector::Connector;
 use crate::proxy::dumper::{Dumper, DumperChannel};
-use crate::proxy::flow::{Flow, FlowStatus};
 use crate::service::Service;
 use crate::stream::ChunkStream;
 

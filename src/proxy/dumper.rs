@@ -14,7 +14,7 @@ use tempfile::NamedTempFile;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::proxy::flow::Flow;
+use crate::flow::Flow;
 use crate::{config::Config, service::Service};
 
 // Dump ignoring the interval
