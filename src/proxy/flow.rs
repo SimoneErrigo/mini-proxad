@@ -1,23 +1,20 @@
 use std::{net::SocketAddr, ops::Range};
 
+use crate::proxy::ProxyStream;
+use crate::stream::ChunkStream;
 use chrono::{DateTime, Utc};
-use tokio::{io::AsyncWriteExt, time};
 use uuid::Uuid;
-
-use crate::proxy::stream::ProxyStream;
-use std::time::Duration;
 
 pub enum FlowStatus {
     Read,
     Closed,
-    Timeout,
+    // TODO
+    //Timeout,
     HistoryTooBig,
 }
 
 pub struct Flow {
     pub id: Uuid,
-    pub client: Option<ProxyStream>,
-    pub server: Option<ProxyStream>,
     pub client_addr: SocketAddr,
     pub server_addr: SocketAddr,
     pub server_history: History,
@@ -38,17 +35,13 @@ pub struct History {
 
 impl Flow {
     pub fn new(
-        client: ProxyStream,
         client_addr: SocketAddr,
         client_max_history: usize,
-        server: ProxyStream,
         server_addr: SocketAddr,
         server_max_history: usize,
     ) -> Flow {
         Flow {
             id: Uuid::new_v4(),
-            client: Some(client),
-            server: Some(server),
             client_addr,
             server_addr,
             client_history: History::new(client_max_history),
@@ -59,45 +52,31 @@ impl Flow {
     pub async fn read_chunk(
         stream: &mut ProxyStream,
         history: &mut History,
-        timeout: Duration,
     ) -> anyhow::Result<FlowStatus> {
         let start = history.bytes.len();
-        let future = stream.read_chunk(&mut history.bytes);
+        match stream.read_chunk(&mut history.bytes).await {
+            Ok(0) => Ok(FlowStatus::Closed),
+            Ok(n) => {
+                history.chunks.push(HistoryChunk {
+                    range: start..start + n,
+                    timestamp: Utc::now(),
+                });
 
-        match time::timeout(timeout, future).await {
-            Ok(Ok(0)) => Ok(FlowStatus::Closed),
-            Ok(Ok(n)) => {
                 if start + n >= history.max_size {
                     Ok(FlowStatus::HistoryTooBig)
                 } else {
-                    history.chunks.push(HistoryChunk {
-                        range: start..start + n,
-                        timestamp: Utc::now(),
-                    });
                     Ok(FlowStatus::Read)
                 }
             }
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => Ok(FlowStatus::Timeout),
+            Err(e) => Err(e.into()),
         }
     }
 
     pub async fn write_last_chunk(
         stream: &mut ProxyStream,
         history: &History,
-        timeout: Duration,
     ) -> anyhow::Result<()> {
-        Ok(time::timeout(timeout, stream.write_chunk(history.last_chunk())).await??)
-    }
-
-    pub async fn close(&mut self) -> anyhow::Result<()> {
-        if let Some(mut stream) = self.server.take() {
-            stream.shutdown().await?;
-        }
-        if let Some(mut stream) = self.client.take() {
-            stream.shutdown().await?;
-        }
-        Ok(())
+        Ok(stream.write_chunk(history.last_chunk()).await?)
     }
 }
 

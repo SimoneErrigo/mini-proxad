@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-use crate::proxy::stream::ProxyStream;
+use crate::proxy::ProxyStream;
 use crate::service::Service;
 
 pub struct Connector {

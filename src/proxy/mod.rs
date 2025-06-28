@@ -1,10 +1,8 @@
 mod acceptor;
 mod connector;
 mod dumper;
-#[macro_use]
 mod filter;
 mod flow;
-mod stream;
 
 use crate::config::Config;
 use crate::proxy::acceptor::Acceptor;
@@ -12,14 +10,18 @@ use crate::proxy::connector::Connector;
 use crate::proxy::dumper::{Dumper, DumperChannel};
 use crate::proxy::flow::{Flow, FlowStatus};
 use crate::service::Service;
+use crate::stream::ChunkStream;
 
 pub use crate::proxy::filter::Filter;
 
 use anyhow::Context;
 use std::ops::ControlFlow;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, warn};
+
+pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
 
 #[derive(Clone)]
 pub struct Proxy {
@@ -71,7 +73,7 @@ impl Proxy {
 
     async fn handle_accept(&self) {
         loop {
-            let (client, addr) = match self.inner.acceptor.accept().await {
+            let (client, client_addr) = match self.inner.acceptor.accept().await {
                 Ok((client, addr)) => {
                     info!("Accepted flow from {}", addr);
                     (client, addr)
@@ -94,19 +96,17 @@ impl Proxy {
             };
 
             let mut flow = Flow::new(
-                client,
-                self.inner.service.client_addr,
+                client_addr,
                 self.inner.service.client_max_history,
-                server,
                 self.inner.service.server_addr,
                 self.inner.service.server_max_history,
             );
             let proxy = self.clone();
 
             tokio::spawn(async move {
-                match proxy.handle_flow(&mut flow).await {
-                    Ok(_) => info!("Closed flow from {}", addr),
-                    Err(e) => warn!("Error in flow from {}: {}", addr, e),
+                match proxy.handle_flow(client, server, &mut flow).await {
+                    Ok(_) => info!("Closed flow from {}", client_addr),
+                    Err(e) => warn!("Error in flow from {}: {}", client_addr, e),
                 };
 
                 if let Some(ref channel) = proxy.inner.dumper {
@@ -118,9 +118,12 @@ impl Proxy {
         }
     }
 
-    async fn handle_flow(&self, flow: &mut Flow) -> anyhow::Result<()> {
-        let client_timeout = self.inner.service.client_timeout;
-        let server_timeout = self.inner.service.server_timeout;
+    async fn handle_flow(
+        &self,
+        mut client: ProxyStream,
+        mut server: ProxyStream,
+        flow: &mut Flow,
+    ) -> anyhow::Result<()> {
         let filter = self.inner.service.filter.clone();
 
         //run_filter!(filter, on_flow_start, flow, {});
@@ -128,7 +131,7 @@ impl Proxy {
         loop {
             select! {
                 // Client -> Server
-                client_status = Flow::read_chunk(flow.client.as_mut().unwrap(), &mut flow.client_history, client_timeout) => {
+                client_status = Flow::read_chunk(&mut client, &mut flow.client_history) => {
                     match client_status? {
                         FlowStatus::Read => {
                             debug!(
@@ -142,9 +145,8 @@ impl Proxy {
                             });
 
                             Flow::write_last_chunk(
-                                flow.server.as_mut().unwrap(),
+                                &mut server,
                                 &mut flow.client_history,
-                                client_timeout,
                             )
                             .await?;
                         }
@@ -152,10 +154,10 @@ impl Proxy {
                             debug!("Client sent eof");
                             break;
                         }
-                        FlowStatus::Timeout => {
-                            debug!("Client timeout elapsed");
-                            break;
-                        }
+                        //FlowStatus::Timeout => {
+                        //    debug!("Client timeout elapsed");
+                        //    break;
+                        //}
                         FlowStatus::HistoryTooBig => {
                             warn!("Client history size reached limit, flow terminated");
                             break;
@@ -164,7 +166,7 @@ impl Proxy {
                 }
 
                 // Server -> Client
-                server_status = Flow::read_chunk(flow.server.as_mut().unwrap(), &mut flow.server_history, server_timeout) => {
+                server_status = Flow::read_chunk(&mut server, &mut flow.server_history) => {
                     match server_status? {
                         FlowStatus::Read => {
                             debug!(
@@ -178,9 +180,8 @@ impl Proxy {
                             });
 
                             Flow::write_last_chunk(
-                                flow.client.as_mut().unwrap(),
+                                &mut client,
                                 &mut flow.server_history,
-                                server_timeout,
                             )
                             .await?;
                         }
@@ -188,10 +189,10 @@ impl Proxy {
                             debug!("Server sent eof");
                             break;
                         }
-                        FlowStatus::Timeout => {
-                            debug!("Server timeout elapsed");
-                            break;
-                        }
+                        //FlowStatus::Timeout => {
+                        //    debug!("Server timeout elapsed");
+                        //    break;
+                        //}
                         FlowStatus::HistoryTooBig => {
                             warn!("Server history size reached limit, flow terminated");
                             break;
@@ -202,9 +203,6 @@ impl Proxy {
         }
 
         //run_filter!(filter, on_flow_close, flow, {});
-
-        // Always close the connection
-        flow.close().await?;
 
         debug!(
             client_history = flow.client_history.bytes.len(),

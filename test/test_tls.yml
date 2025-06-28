@@ -8,7 +8,7 @@ script_path: ./test/filter.py
 tls_enabled: true
 tls_cert_file: ./test/keys/cert.pem
 tls_key_file: ./test/keys/key.pem
-tls_ca_file: ./test/keys/ca-cert.pem
+#tls_ca_file: ./test/keys/ca-cert.pem
 
 dump_enabled: true
 dump_path: "./pcaps"

@@ -1,6 +1,5 @@
-use crate::proxy::stream::ProxyStream;
+use crate::proxy::ProxyStream;
 use crate::service::Service;
-
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;

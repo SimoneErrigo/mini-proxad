@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
+// TODO: Use real streams
 
 #[async_trait]
 pub trait ChunkStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {

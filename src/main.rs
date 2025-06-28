@@ -1,6 +1,7 @@
 mod config;
 mod proxy;
 mod service;
+mod stream;
 mod tls;
 
 use clap::Parser;
