@@ -94,17 +94,27 @@ async fn main() {
         }
     }
 
-    match Proxy::start(service, &config).await {
+    let task = match Proxy::start(service, &config).await {
         Ok(task) => {
             info!(
                 "Started Proxad {} -> {}",
                 &config.client_port, &config.server_port
             );
-            task.await.expect("Idk");
+            task
         }
         Err(e) => {
             error!("Proxy failed to start: {}", e);
             exit(1);
         }
+    };
+
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {
+            info!("Bye!");
+            exit(0)
+        }
+        Err(e) => error!("Unable to listen for shutdown signal: {}", e),
     }
+
+    task.await.unwrap()
 }

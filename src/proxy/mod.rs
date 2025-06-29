@@ -17,6 +17,7 @@ use anyhow::Context;
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, warn};
 
@@ -72,7 +73,7 @@ impl Proxy {
 
     async fn handle_accept(&self) {
         loop {
-            let (client, client_addr) = match self.inner.acceptor.accept().await {
+            let (mut client, client_addr) = match self.inner.acceptor.accept().await {
                 Ok((client, addr)) => {
                     info!("Accepted flow from {}", addr);
                     (client, addr)
@@ -90,6 +91,10 @@ impl Proxy {
                         "Failed to connect to service on {}: {}",
                         self.inner.service.server_addr, e
                     );
+
+                    if let Err(e) = client.shutdown().await {
+                        debug!("Failed to shutdown client {}: {}", client_addr, e);
+                    }
                     continue;
                 }
             };
@@ -107,6 +112,15 @@ impl Proxy {
                     Ok(_) => info!("Closed flow from {}", client_addr),
                     Err(e) => warn!("Error in flow from {}: {}", client_addr, e),
                 };
+
+                debug!(
+                    client_history = flow.client_history.bytes.len(),
+                    client_chunks = flow.client_history.chunks.len(),
+                    server_history = flow.server_history.bytes.len(),
+                    server_chunks = flow.server_history.chunks.len(),
+                    "History size for flow {}",
+                    flow.id,
+                );
 
                 if let Some(ref channel) = proxy.inner.dumper {
                     if let Err(e) = channel.send(flow) {
@@ -203,14 +217,9 @@ impl Proxy {
 
         //run_filter!(filter, on_flow_close, flow, {});
 
-        debug!(
-            client_history = flow.client_history.bytes.len(),
-            client_chunks = flow.client_history.chunks.len(),
-            server_history = flow.server_history.bytes.len(),
-            server_chunks = flow.server_history.chunks.len(),
-            "History size for flow {}",
-            flow.id,
-        );
+        // TODO: Is explicit shutdown needed?
+        client.shutdown().await?;
+        server.shutdown().await?;
 
         Ok(())
     }
