@@ -6,10 +6,16 @@ service_name: Service_123
 from_ip: 0.0.0.0
 from_port: 9443
 
+from_max_history: 1b
+from_timeout: 80s
+
 # The port and ip for the internal service
 # aliases: server_ip, server_port
 to_ip: 127.0.0.1
 to_port: 8443
+
+to_max_history: 10Mib
+to_timeout: 80s
 
 # The path to the python filter
 # This will be automatically reloaded

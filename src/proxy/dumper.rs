@@ -99,6 +99,9 @@ impl Dumper {
             let start = Instant::now();
             loop {
                 let elapsed = start.elapsed();
+
+                // TODO: Right now the max_packets are not followed faithfully
+                //       The writer should be able to be swapped when writing the flows
                 if elapsed >= self.interval || n_packets > self.max_packets {
                     break;
                 }
@@ -118,7 +121,7 @@ impl Dumper {
             }
 
             if n_packets == 0 {
-                info!("Skipped dumping empty pcap file");
+                debug!("Skipped dumping empty pcap file");
                 continue;
             }
 

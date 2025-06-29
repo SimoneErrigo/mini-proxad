@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::{select, task::JoinHandle};
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, instrument, warn};
 
 pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
 
@@ -36,8 +36,8 @@ struct ProxyInner {
 }
 
 macro_rules! run_filter {
-    ($filter:expr, $method:ident, $arg:expr, $on_break:block) => {
-        if let Some(ref filter) = $filter {
+    ($proxy:expr, $method:ident, $arg:expr, $on_break:block) => {
+        if let Some(ref filter) = $proxy.inner.service.filter.clone() {
             if let ControlFlow::Break(_) = filter.$method($arg).await {
                 $on_break
             }
@@ -105,6 +105,7 @@ impl Proxy {
                 self.inner.service.server_addr,
                 self.inner.service.server_max_history,
             );
+
             let proxy = self.clone();
 
             tokio::spawn(async move {
@@ -137,8 +138,6 @@ impl Proxy {
         mut server: ProxyStream,
         flow: &mut Flow,
     ) -> anyhow::Result<()> {
-        let filter = self.inner.service.filter.clone();
-
         //run_filter!(filter, on_flow_start, flow, {});
 
         loop {
@@ -152,7 +151,7 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.client_history.last_chunk())
                             );
 
-                            run_filter!(filter, on_client_chunk, flow, {
+                            run_filter!(self, on_client_chunk, flow, {
                                 info!("Python client filter killed flow {}", flow.id);
                                 break;
                             });
@@ -187,7 +186,7 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.server_history.last_chunk())
                             );
 
-                            run_filter!(filter, on_server_chunk, flow, {
+                            run_filter!(self, on_server_chunk, flow, {
                                 info!("Python server filter killed flow {}", flow.id);
                                 break;
                             });

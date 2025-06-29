@@ -22,16 +22,24 @@ pub struct Config {
     #[serde(alias = "to_port")]
     pub server_port: u16,
 
-    #[serde(default = "default_timeout", with = "humantime_serde")]
+    #[serde(
+        alias = "from_timeout",
+        default = "default_timeout",
+        with = "humantime_serde"
+    )]
     pub client_timeout: Duration,
 
-    #[serde(default = "default_timeout", with = "humantime_serde")]
+    #[serde(
+        alias = "to_timeout",
+        default = "default_timeout",
+        with = "humantime_serde"
+    )]
     pub server_timeout: Duration,
 
-    #[serde(default = "default_max_history")]
+    #[serde(alias = "from_max_history", default = "default_max_history")]
     pub client_max_history: Byte,
 
-    #[serde(default = "default_max_history")]
+    #[serde(alias = "to_max_history", default = "default_max_history")]
     pub server_max_history: Byte,
 
     pub tls_enabled: bool,
@@ -57,7 +65,7 @@ pub struct Config {
     #[serde(with = "humantime_serde")]
     pub dump_interval: Option<Duration>,
 
-    #[serde(default)]
+    #[serde(default = "default_max_packets")]
     pub dump_max_packets: usize,
 }
 
@@ -67,6 +75,10 @@ fn default_timeout() -> Duration {
 
 fn default_max_history() -> Byte {
     Byte::from_u64_with_unit(512, Unit::MiB).unwrap()
+}
+
+fn default_max_packets() -> usize {
+    512
 }
 
 impl Config {
