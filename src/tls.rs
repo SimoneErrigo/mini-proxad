@@ -31,13 +31,13 @@ impl TlsConfig {
 
         let mut server = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(certs.clone(), key.clone_key())?;
+            .with_single_cert(certs, key)?;
 
         server.alpn_protocols = vec!["http/1.1".into()];
 
         let mut client = ClientConfig::builder()
             .with_root_certificates(root_store)
-            .with_client_auth_cert(certs, key)?;
+            .with_no_client_auth();
 
         client.alpn_protocols = vec!["http/1.1".into()];
 
