@@ -36,6 +36,10 @@ where
                         total += filled.len();
                     }
                     Poll::Ready(Err(e)) => {
+                        // Don't throw away buffer on EOFs (for example TLS termination without close notify)
+                        if e.kind() == tokio::io::ErrorKind::UnexpectedEof {
+                            return Poll::Ready(Ok(total));
+                        }
                         return Poll::Ready(Err(e));
                     }
                     Poll::Pending => {
