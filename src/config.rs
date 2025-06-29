@@ -56,6 +56,9 @@ pub struct Config {
 
     #[serde(with = "humantime_serde")]
     pub dump_interval: Option<Duration>,
+
+    #[serde(default)]
+    pub dump_max_packets: usize,
 }
 
 fn default_timeout() -> Duration {

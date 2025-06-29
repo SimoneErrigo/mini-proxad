@@ -123,7 +123,7 @@ impl Proxy {
                 );
 
                 if let Some(ref channel) = proxy.inner.dumper {
-                    if let Err(e) = channel.send(flow) {
+                    if let Err(e) = channel.try_send(flow) {
                         warn!("Could not send flow to dumper: {}", e);
                     }
                 }

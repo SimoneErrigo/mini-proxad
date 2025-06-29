@@ -28,7 +28,11 @@ tls_key_file: ./test/keys/key.pem
 #   - {timestamp} will be replaced with the time of the dump
 #   - {client_ip} {from_ip} will be replaced with the client_ip
 #   - {server_ip} {to_ip} will be replaced with the server_ip
+#
+# The current pcap file will be dumped every dump_interval or
+# when dump_max_packets is reached
 dump_enabled: false
 dump_path: "./pcaps"
 dump_format: "{service}_{server_port}_{timestamp}.pcap"
 dump_interval: 30s
+dump_max_packets: 256

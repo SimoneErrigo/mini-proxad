@@ -17,17 +17,18 @@ use tracing::{debug, error, info, warn};
 use crate::flow::Flow;
 use crate::{config::Config, service::Service};
 
-// Dump ignoring the interval
-const MAX_PACKETS: usize = 100;
+const DUMP_CHANNEL_LIMIT: usize = 400;
 
 pub struct Dumper {
     path: PathBuf,
     format: String,
     interval: Duration,
+    max_packets: usize,
+    format_map: HashMap<String, String>,
     rx: mpsc::Receiver<Flow>,
 }
 
-pub type DumperChannel = mpsc::Sender<Flow>;
+pub type DumperChannel = mpsc::SyncSender<Flow>;
 
 impl Dumper {
     pub async fn start(service: &Service, config: &Config) -> anyhow::Result<DumperChannel> {
@@ -69,19 +70,21 @@ impl Dumper {
             ("to_port".into(), service.server_addr.port().to_string()),
         ]);
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(DUMP_CHANNEL_LIMIT);
         let dumper = Dumper {
             path,
             format,
             interval,
+            format_map,
+            max_packets: config.dump_max_packets,
             rx,
         };
 
-        tokio::task::spawn_blocking(move || dumper.dumper(format_map));
+        tokio::task::spawn_blocking(move || dumper.dumper());
         Ok(tx)
     }
 
-    fn dumper(self, mut format_map: HashMap<String, String>) -> anyhow::Result<()> {
+    fn dumper(mut self) -> anyhow::Result<()> {
         loop {
             let mut tmpfile = NamedTempFile::new()?;
             let mut writer = PcapWriter::new(tmpfile.as_file_mut())?;
@@ -90,7 +93,7 @@ impl Dumper {
             let start = Instant::now();
             loop {
                 let elapsed = start.elapsed();
-                if elapsed >= self.interval || n_packets > MAX_PACKETS {
+                if elapsed >= self.interval || n_packets > self.max_packets {
                     break;
                 }
                 let timeout = self.interval - elapsed;
@@ -114,8 +117,8 @@ impl Dumper {
             }
 
             let end = Utc::now().timestamp();
-            format_map.insert("timestamp".into(), end.to_string());
-            let filename = strfmt::strfmt(&self.format, &format_map)?;
+            self.format_map.insert("timestamp".into(), end.to_string());
+            let filename = strfmt::strfmt(&self.format, &self.format_map)?;
 
             let path = self.path.join(filename);
             match Self::save_pcap(tmpfile, &path) {
