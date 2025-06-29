@@ -89,7 +89,7 @@ async fn main() {
         }
         Ok(None) => debug!("No python filter loaded"),
         Err(e) => {
-            error!("Failed to load python filter: {}", e);
+            error!("Failed to load python filter: {:?}", e);
             exit(1);
         }
     }
@@ -97,8 +97,8 @@ async fn main() {
     let task = match Proxy::start(service, &config).await {
         Ok(task) => {
             info!(
-                "Started Proxad {} -> {}",
-                &config.client_port, &config.server_port
+                "Started Proxad {}:{} -> {}:{}",
+                &config.client_ip, &config.client_port, &config.server_ip, &config.server_port
             );
             task
         }

@@ -124,7 +124,7 @@ DEFAULT_FILTER: FilterType = kill
 CLIENT_FILTERS: list[FilterType] = []
 
 # Filters for the messages sent from the server to the client (outgoing)
-SERVER_FILTERS: list[FilterType] = [whitelist_useragent, default_on_evil]
+SERVER_FILTERS: list[FilterType] = [default_on_evil]
 
 
 # ------------------------------------------------------------------------------------------------ #

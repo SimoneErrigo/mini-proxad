@@ -6,6 +6,7 @@ use pcap_file::pcap::{PcapPacket, PcapWriter};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::io::Cursor;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::sync::mpsc;
@@ -18,6 +19,11 @@ use crate::flow::Flow;
 use crate::{config::Config, service::Service};
 
 const DUMP_CHANNEL_LIMIT: usize = 400;
+
+const MTU_LEN: usize = 65535;
+const ETHERNET_HEADER_LEN: usize = 14;
+const IPV4_HEADER_LEN: usize = 20;
+const TCP_HEADER_LEN: usize = 20;
 
 pub struct Dumper {
     path: PathBuf,
@@ -101,7 +107,7 @@ impl Dumper {
                 match self.rx.recv_timeout(timeout) {
                     Ok(flow) => match Self::write_tcp_flow(&mut writer, &flow) {
                         Ok(n) => n_packets += n,
-                        Err(e) => warn!("Failed to dump pcaps for flow {}: {}", flow.id, e),
+                        Err(e) => warn!("Failed to dump pcaps for flow {}: {:?}", flow.id, e),
                     },
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -123,7 +129,11 @@ impl Dumper {
             let path = self.path.join(filename);
             match Self::save_pcap(tmpfile, &path) {
                 Ok(_) => info!("Dumped pcaps to {}", path.to_string_lossy()),
-                Err(e) => error!("Failed to save pcaps to {}: {}", path.to_string_lossy(), e),
+                Err(e) => error!(
+                    "Failed to save pcaps to {}: {:?}",
+                    path.to_string_lossy(),
+                    e
+                ),
             }
         }
     }
@@ -164,6 +174,9 @@ impl Dumper {
         let mut ack_client = seq_server + 1;
         let mut ack_server = seq_client + 1;
 
+        let header_size = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + TCP_HEADER_LEN;
+        let max_payload = MTU_LEN - header_size;
+
         let mut n_packets = 0;
 
         let mut timestamp = flow
@@ -194,41 +207,52 @@ impl Dumper {
 
         let mut last_was_client = false;
 
+        // TODO: Coalesce consecutive chunks coming from the same source
         for (addr, chunk) in flow.into_iter() {
-            let (bytes, seq, ack, src, dst, sport, dport) = if addr == flow.client_addr {
-                let bytes = &flow.client_history.bytes[chunk.range.clone()];
-                last_was_client = true;
-
-                (
-                    bytes, seq_client, ack_client, src_ip, dst_ip, src_port, dst_port,
-                )
-            } else {
-                let bytes = &flow.server_history.bytes[chunk.range.clone()];
-                last_was_client = false;
-
-                (
-                    bytes, seq_server, ack_server, dst_ip, src_ip, dst_port, src_port,
-                )
-            };
-
             timestamp = Duration::new(
                 chunk.timestamp.timestamp() as u64,
                 chunk.timestamp.timestamp_subsec_nanos(),
             );
 
-            // PSH+ACK data packet
-            Self::write_tcp_packet(
-                writer, timestamp, src, dst, sport, dport, seq, ack, 0x18, bytes,
-            )?;
-            n_packets += 1;
-
-            // Update seq/ack numbers per side
-            if addr == flow.client_addr {
-                seq_client = seq_client.wrapping_add(bytes.len() as u32);
-                ack_server = seq_client;
+            let bytes = if addr == flow.client_addr {
+                last_was_client = true;
+                &flow.client_history.bytes[chunk.range.clone()]
             } else {
-                seq_server = seq_server.wrapping_add(bytes.len() as u32);
-                ack_client = seq_server;
+                last_was_client = false;
+                &flow.server_history.bytes[chunk.range.clone()]
+            };
+
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let end = (offset + max_payload).min(bytes.len());
+                let bytes = &bytes[offset..end];
+                offset = end;
+
+                let (seq, ack, src, dst, sport, dport) = if addr == flow.client_addr {
+                    (seq_client, ack_client, src_ip, dst_ip, src_port, dst_port)
+                } else {
+                    (seq_server, ack_server, dst_ip, src_ip, dst_port, src_port)
+                };
+
+                let mut flags = 0x10; // ACK
+                if end == bytes.len() {
+                    flags |= 0x08; // PSH
+                }
+
+                Self::write_tcp_packet(
+                    writer, timestamp, src, dst, sport, dport, seq, ack, flags, bytes,
+                )?;
+
+                n_packets += 1;
+
+                // Update seq/ack numbers per side
+                if addr == flow.client_addr {
+                    seq_client = seq_client.wrapping_add(bytes.len() as u32);
+                    ack_server = seq_client;
+                } else {
+                    seq_server = seq_server.wrapping_add(bytes.len() as u32);
+                    ack_client = seq_server;
+                }
             }
         }
 
@@ -290,7 +314,7 @@ impl Dumper {
             0x02,
             &[],
         )?;
-        *seq_client += 1;
+        *seq_client = seq_client.wrapping_add(1);
 
         // SYN-ACK from server
         Self::write_tcp_packet(
@@ -338,12 +362,11 @@ impl Dumper {
         flags: u8,
         payload: &[u8],
     ) -> anyhow::Result<()> {
-        let window_size = 65535;
-
         // Use dummy MAC addresses for ethernet layer
         let dummy_mac1 = [0x11; 6];
         let dummy_mac2 = [0x22; 6];
 
+        let window_size = 65535;
         let mut builder = PacketBuilder::ethernet2(dummy_mac1, dummy_mac2)
             .ipv4(src_ip.octets(), dst_ip.octets(), 64)
             .tcp(src_port, dst_port, seq, window_size);
@@ -361,13 +384,15 @@ impl Dumper {
             builder = builder.psh();
         }
 
-        let mut buffer = Vec::<u8>::with_capacity(14 + 20 + 20 + payload.len());
-        builder.write(&mut buffer, payload)?;
+        let mut buffer = [0u8; MTU_LEN];
+        let mut cursor = Cursor::new(&mut buffer[..]);
+        builder.write(&mut cursor, payload)?;
 
+        let packet_len = cursor.position() as usize;
         let packet = PcapPacket {
             timestamp,
-            orig_len: buffer.len() as u32,
-            data: Cow::Owned(buffer),
+            orig_len: packet_len as u32,
+            data: Cow::Borrowed(&buffer[..packet_len]),
         };
 
         writer
