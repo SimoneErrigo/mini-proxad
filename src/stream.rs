@@ -21,10 +21,11 @@ where
         poll_fn(|cx| {
             let mut total = 0;
             let mut temp_buf = [0u8; 4096];
-            let mut read_buf = ReadBuf::new(&mut temp_buf);
 
             loop {
+                let mut read_buf = ReadBuf::new(&mut temp_buf);
                 let pinned = Pin::new(&mut *self);
+
                 match pinned.poll_read(cx, &mut read_buf) {
                     Poll::Ready(Ok(())) => {
                         let filled = read_buf.filled();
