@@ -132,6 +132,7 @@ impl Proxy {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle_flow(
         &self,
         mut client: ProxyStream,

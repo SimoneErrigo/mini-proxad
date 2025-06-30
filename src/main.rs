@@ -10,7 +10,7 @@ use std::process::exit;
 use std::sync::Arc;
 use tokio;
 use tracing::{debug, error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::Config;
 use crate::proxy::{Filter, Proxy};
@@ -23,10 +23,10 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    #[arg(long = "config", required = true)]
+    #[arg(short, long = "config", required = true)]
     config_path: String,
 
-    #[arg(long, default_value = "true")]
+    #[arg(short, long, default_value = "true")]
     watcher: bool,
 }
 
@@ -40,7 +40,10 @@ async fn main() {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    fmt::fmt()
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
+        .with_env_filter(filter)
+        .init();
 
     info!("Welcome to Proxad (mini edition) ^-^");
 
