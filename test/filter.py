@@ -30,11 +30,15 @@ FilterType = typing.Callable[[uuid.UUID, bytes, bytes, bytes], FilterOutput]
 
 
 # HTTP session tracking
-HTTP_SESSION_TRACK = False
-HTTP_SESSION_COOKIE = "session"
+HTTP_SESSION_TRACK = True
+HTTP_SESSION_COOKIE = b"session"
 HTTP_SESSION_TTL = 30  # seconds
 HTTP_SESSION_LIMIT = 4000
 
+HTTP_SESSION_GET_REGEX = re.compile(rb"Cookie:\s*" + HTTP_SESSION_COOKIE + rb"=([^;]+)")
+HTTP_SESSION_SET_REGEX = re.compile(
+    rb"Set-Cookie:\s*" + HTTP_SESSION_COOKIE + rb"=([^;]+)"
+)
 
 # Regexes
 FLAG_REGEX = re.compile(rb"[A-Z0-9]{31}=")
@@ -170,7 +174,10 @@ def client_filter_history(
     id: uuid.UUID, chunk: bytes, client_history: bytes, server_history: bytes
 ) -> FilterOutput:
     if HTTP_SESSION_TRACK:
-        pass
+        match = HTTP_SESSION_GET_REGEX.search(chunk)
+        if match:
+            print("Found session_id:", match.group(1))
+
     return run_filters(id, chunk, client_history, server_history, CLIENT_FILTERS)
 
 
@@ -179,5 +186,8 @@ def server_filter_history(
     id: uuid.UUID, chunk: bytes, client_history: bytes, server_history: bytes
 ) -> FilterOutput:
     if HTTP_SESSION_TRACK:
-        pass
+        match = HTTP_SESSION_SET_REGEX.search(chunk)
+        if match:
+            print("First session_id:", match.group(1))
+
     return run_filters(id, chunk, client_history, server_history, SERVER_FILTERS)

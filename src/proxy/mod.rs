@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::{select, task::JoinHandle};
-use tracing::{Instrument, debug, info, instrument, warn};
+use tracing::{debug, info, trace, warn};
 
 pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
 
@@ -147,7 +147,7 @@ impl Proxy {
                 client_status = Flow::read_chunk(&mut client, &mut flow.client_history) => {
                     match client_status? {
                         FlowStatus::Read => {
-                            debug!(
+                            trace!(
                                 "Client → Server: {:?}",
                                 String::from_utf8_lossy(flow.client_history.last_chunk())
                             );
@@ -182,7 +182,7 @@ impl Proxy {
                 server_status = Flow::read_chunk(&mut server, &mut flow.server_history) => {
                     match server_status? {
                         FlowStatus::Read => {
-                            debug!(
+                            trace!(
                                 "Server → Client: {:?}",
                                 String::from_utf8_lossy(flow.server_history.last_chunk())
                             );
