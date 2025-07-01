@@ -9,7 +9,7 @@ use clap::Parser;
 use std::process::exit;
 use std::sync::Arc;
 use tokio;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::Config;
@@ -96,6 +96,11 @@ async fn main() {
             error!("Failed to load python filter: {:?}", e);
             exit(1);
         }
+    }
+
+    match rlimit::increase_nofile_limit(u64::MAX) {
+        Ok(lim) => info!("Raised nofile limits to {}", lim),
+        Err(e) => warn!("Failed to raise nofile limits: {}", e),
     }
 
     let task = match Proxy::start(service, &config).await {
