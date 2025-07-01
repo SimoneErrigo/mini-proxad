@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize)]

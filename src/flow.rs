@@ -1,24 +1,13 @@
 use std::{net::SocketAddr, ops::Range};
-
-use crate::proxy::ProxyStream;
-use crate::stream::ChunkStream;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-
-pub enum FlowStatus {
-    Read,
-    Closed,
-    // TODO
-    //Timeout,
-    HistoryTooBig,
-}
 
 pub struct Flow {
     pub id: Uuid,
     pub client_addr: SocketAddr,
     pub server_addr: SocketAddr,
-    pub server_history: History,
     pub client_history: History,
+    pub server_history: History,
 }
 
 #[derive(Clone)]
@@ -47,36 +36,6 @@ impl Flow {
             client_history: History::new(client_max_history),
             server_history: History::new(server_max_history),
         }
-    }
-
-    pub async fn read_chunk(
-        stream: &mut ProxyStream,
-        history: &mut History,
-    ) -> anyhow::Result<FlowStatus> {
-        let start = history.bytes.len();
-        match stream.read_chunk(&mut history.bytes).await {
-            Ok(0) => Ok(FlowStatus::Closed),
-            Ok(n) => {
-                history.chunks.push(HistoryChunk {
-                    range: start..start + n,
-                    timestamp: Utc::now(),
-                });
-
-                if start + n >= history.max_size {
-                    Ok(FlowStatus::HistoryTooBig)
-                } else {
-                    Ok(FlowStatus::Read)
-                }
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub async fn write_last_chunk(
-        stream: &mut ProxyStream,
-        history: &History,
-    ) -> anyhow::Result<()> {
-        Ok(stream.write_chunk(history.last_chunk()).await?)
     }
 }
 

@@ -30,7 +30,7 @@ FilterType = typing.Callable[[uuid.UUID, bytes, bytes, bytes], FilterOutput]
 
 
 # HTTP session tracking
-HTTP_SESSION_TRACK = True
+HTTP_SESSION_TRACK = False
 HTTP_SESSION_COOKIE = b"session"
 HTTP_SESSION_TTL = 30  # seconds
 HTTP_SESSION_LIMIT = 4000

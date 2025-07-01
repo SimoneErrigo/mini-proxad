@@ -6,16 +6,23 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 // TODO: Use real streams
 
+pub trait ChunkStream: ChunkRead + ChunkWrite {}
+impl<T: ChunkRead + ChunkWrite> ChunkStream for T {}
+
 #[async_trait]
-pub trait ChunkStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {
+pub trait ChunkRead: AsyncRead + Send + Sync + Unpin {
     async fn read_chunk(&mut self, buffer: &mut Vec<u8>) -> tokio::io::Result<usize>;
+}
+
+#[async_trait]
+pub trait ChunkWrite: AsyncWrite + Send + Sync + Unpin {
     async fn write_chunk(&mut self, buffer: &[u8]) -> tokio::io::Result<()>;
 }
 
 #[async_trait]
-impl<T> ChunkStream for T
+impl<T> ChunkRead for T
 where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    T: AsyncRead + Send + Sync + Unpin,
 {
     async fn read_chunk(&mut self, buffer: &mut Vec<u8>) -> tokio::io::Result<usize> {
         poll_fn(|cx| {
@@ -55,7 +62,13 @@ where
         })
         .await
     }
+}
 
+#[async_trait]
+impl<T> ChunkWrite for T
+where
+    T: AsyncWrite + Send + Sync + Unpin,
+{
     async fn write_chunk(&mut self, buffer: &[u8]) -> tokio::io::Result<()> {
         self.write_all(buffer).await
     }
