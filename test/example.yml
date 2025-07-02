@@ -42,3 +42,18 @@ dump_path: "./pcaps"
 dump_format: "{service}_{server_port}_{timestamp}.pcap"
 dump_interval: 30s
 dump_max_packets: 256
+
+# Http configuration
+# When enabled the requests and responses are parsed by the proxy.
+# A different filter is called with the HttpResponse and HttpRequest.
+#
+# Keep alive will allow the proxy to reuse the connection to serve
+# multiple responses/requests. If enabled dumps will be delayed!
+#
+# Requests (or responses!) with a body greater then the max body size
+# will automatically kill the flow
+http_enabled: false
+http_keep_alive: false
+http_half_close: true
+http_date_header: false
+http_max_body: 20MB
