@@ -1,8 +1,11 @@
-mod api;
+pub mod api;
 
-use crate::flow::history::RawHistory;
+use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
+use crate::flow::history::{HttpHistory, RawHistory};
 use crate::flow::{HttpFlow, RawFlow};
+use crate::http::{HttpMessage, HttpResponse};
 use anyhow::Context;
+use chrono::Utc;
 use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
@@ -17,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(2);
 
@@ -36,11 +39,10 @@ impl Filter {
             let sys = PyModule::import(py, "sys").unwrap();
             let py_modules: Bound<'_, PyDict> =
                 sys.getattr("modules").unwrap().downcast_into().unwrap();
+
             py_modules
                 .set_item("proxad", module)
-                .expect("Failed to import adders");
-
-            Ok(())
+                .context("Failed to import proxad module")
         })
     }
 
@@ -74,7 +76,7 @@ impl Filter {
             Ok(Either::Left(Some(bytes))) => {
                 Python::with_gil(|py| match bytes.extract::<&[u8]>(py) {
                     Ok(bytes) => {
-                        //debug!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
+                        trace!("Modified chunk: {:?}", String::from_utf8_lossy(&bytes));
                         history.set_last_chunk(bytes);
                     }
                     Err(e) => warn!("Failed to convert bytes: {}", e),
@@ -88,6 +90,47 @@ impl Filter {
     }
 
     pub async fn on_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+        let module = self.module.read().await;
+        let result: anyhow::Result<Either<Option<Py<PyHttpResponse>>, Py<PyEllipsis>>> =
+            Python::with_gil(|py| {
+                let module = module.bind(py);
+                let filter_name = intern!(py, "http_filter");
+                let func = module.getattr(filter_name)?;
+                let args = (
+                    flow.id,
+                    flow.history
+                        .messages
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
+                        .into_pyobject(py)?,
+                );
+
+                debug!("Running filter {} for flow {}", filter_name, flow.id);
+                Ok(func.call1(args)?.extract()?)
+            });
+
+        match result {
+            // Kill connection on ellipses
+            Ok(Either::Right(_)) => return ControlFlow::Break(()),
+            // Replace last chunk on bytes
+            Ok(Either::Left(Some(resp))) => {
+                Python::with_gil(|py| match resp.extract::<HttpResponse>(py) {
+                    Ok(resp) => {
+                        trace!("Modified response: {:?}", resp);
+                        let last = flow.history.messages.last_mut().unwrap();
+                        *last = HttpMessage::Response {
+                            response: resp,
+                            timestamp: Utc::now(),
+                        }
+                    }
+                    Err(e) => warn!("Failed to convert bytes: {}", e),
+                });
+            }
+            // Do nothing on none
+            Ok(Either::Left(None)) => (),
+            Err(e) => warn!("Failed to run python filter: {}", e),
+        };
         ControlFlow::Continue(())
     }
 

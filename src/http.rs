@@ -1,11 +1,14 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
-use hyper::{Request, Response, client::conn::http1::Connection, service::HttpService};
+use hyper::{Request, Response, service::HttpService};
 use hyper_util::rt::TokioTimer;
-use std::sync::Arc;
+use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods};
+use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use std::{io::Write, time::Duration};
 
+use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
 use crate::{config::Config, proxy::ProxyStream};
 
 pub type BytesBody = BoxBody<Bytes, hyper::Error>;
@@ -54,13 +57,20 @@ impl HttpConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct HttpResponse(pub Response<Bytes>);
+
+#[derive(Debug, Clone)]
+pub struct HttpRequest(pub Request<Bytes>);
+
+#[derive(Debug, Clone)]
 pub enum HttpMessage {
     Response {
-        response: Response<Bytes>,
+        response: HttpResponse,
         timestamp: DateTime<Utc>,
     },
     Request {
-        request: Request<Bytes>,
+        request: HttpRequest,
         timestamp: DateTime<Utc>,
     },
 }
@@ -68,8 +78,8 @@ pub enum HttpMessage {
 impl HttpMessage {
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
-            HttpMessage::Response { response, .. } => Self::response_to_bytes(response),
-            HttpMessage::Request { request, .. } => Self::request_to_bytes(request),
+            HttpMessage::Response { response, .. } => Self::response_to_bytes(&response.0),
+            HttpMessage::Request { request, .. } => Self::request_to_bytes(&request.0),
         }
     }
 
@@ -130,5 +140,140 @@ impl HttpMessage {
 
         buf.extend_from_slice(&resp.body()[..]);
         buf
+    }
+}
+
+impl<'py> IntoPyObject<'py> for HttpResponse {
+    type Target = PyHttpResponse;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let (parts, body) = self.0.into_parts();
+
+        let headers = PyDict::new(py);
+        for (name, value) in parts.headers.iter() {
+            headers.set_item(name.as_str(), value.to_str().unwrap())?;
+        }
+
+        let body = PyBytes::new(py, &body).into();
+        let status = parts.status.as_u16();
+
+        let resp: Py<PyHttpResponse> = Py::new(
+            py,
+            PyHttpResponse::new(headers.clone().into(), body, status),
+        )?;
+
+        Ok(resp.into_bound(py))
+    }
+}
+
+impl<'py> IntoPyObject<'py> for HttpRequest {
+    type Target = PyHttpRequest;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let (parts, body) = self.0.into_parts();
+
+        let headers = PyDict::new(py);
+        for (name, value) in parts.headers.iter() {
+            headers.set_item(name.as_str(), value.to_str().unwrap())?;
+        }
+
+        let body = PyBytes::new(py, &body).into();
+        let method = parts.method.to_string();
+        let uri = PyBytes::new(py, parts.uri.to_string().as_bytes()).into();
+
+        let req: Py<PyHttpRequest> = Py::new(
+            py,
+            PyHttpRequest::new(headers.clone().into(), body, method, uri),
+        )?;
+
+        Ok(req.into_bound(py))
+    }
+}
+
+impl<'py> IntoPyObject<'py> for HttpMessage {
+    type Target = PyHttpMessage;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        match self {
+            HttpMessage::Response { response, .. } => {
+                let resp: Bound<'py, PyHttpResponse> = response.into_pyobject(py)?;
+                Ok(resp.into_super())
+            }
+            HttpMessage::Request { request, .. } => {
+                let req: Bound<'py, PyHttpRequest> = request.into_pyobject(py)?;
+                Ok(req.into_super())
+            }
+        }
+    }
+}
+
+impl<'py> FromPyObject<'py> for HttpRequest {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let req_bound: &Bound<'py, PyHttpRequest> = ob.downcast()?;
+        let req = req_bound.borrow();
+
+        let method = req.method.as_str();
+        let uri = req.uri.as_bytes(ob.py());
+
+        let msg_bound: &Bound<'py, PyHttpMessage> = req_bound.as_super();
+        let msg = msg_bound.borrow();
+
+        let headers: &Bound<'py, PyDict> = msg.headers.bind(ob.py());
+        let body: &[u8] = msg.body.as_ref().extract(ob.py())?;
+
+        let mut builder = Request::builder()
+            .method(method.parse::<Method>().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("bad method: {}", e))
+            })?)
+            .uri(str::from_utf8(uri)?.parse::<Uri>().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("bad uri: {}", e))
+            })?);
+
+        for (k, v) in headers.iter() {
+            let k: &str = k.extract()?;
+            let v: &str = v.extract()?;
+            builder = builder.header(k, v);
+        }
+
+        Ok(HttpRequest(
+            builder
+                .body(Bytes::copy_from_slice(body))
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
+        ))
+    }
+}
+
+impl<'py> FromPyObject<'py> for HttpResponse {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let resp_bound: &Bound<'py, PyHttpResponse> = ob.downcast()?;
+        let resp = resp_bound.borrow();
+
+        let status = resp.status;
+
+        let msg_bound: &Bound<'py, PyHttpMessage> = resp_bound.as_super();
+        let msg = msg_bound.borrow();
+
+        let headers: &Bound<'py, PyDict> = msg.headers.bind(ob.py());
+        let body: &[u8] = msg.body.as_ref().extract(ob.py())?;
+
+        let mut builder = Response::builder().status(status);
+
+        for (k, v) in headers.iter() {
+            let k: &str = k.extract()?;
+            let v: &str = v.extract()?;
+            builder = builder.header(k, v);
+        }
+
+        Ok(HttpResponse(
+            builder
+                .body(Bytes::copy_from_slice(body))
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
+        ))
     }
 }

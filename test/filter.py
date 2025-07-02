@@ -193,3 +193,8 @@ def server_filter_history(
             print("First session_id:", match.group(1))
 
     return run_filters(id, chunk, client_history, server_history, SERVER_FILTERS)
+
+
+def http_filter(id, resp):
+    print(id)
+    print(resp)

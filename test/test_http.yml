@@ -15,4 +15,4 @@ dump_interval: 30s
 
 
 http_enabled: true
-http_max_body: 10Mb
+http_max_body: 1Mb

@@ -177,7 +177,7 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
 
                 match guard.flow.history.messages.last() {
                     Some(HttpMessage::Response { response, .. }) => {
-                        let (parts, body) = response.clone().into_parts();
+                        let (parts, body) = response.0.clone().into_parts();
                         Response::from_parts(parts, Self::full(body))
                     }
                     _ => {

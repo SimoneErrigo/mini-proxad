@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use hyper::{Request, Response};
 use std::{ops::Range, sync::Arc};
 
-use crate::http::HttpMessage;
+use crate::http::{HttpMessage, HttpRequest, HttpResponse};
 
 pub struct HttpHistory {
     pub messages: Vec<HttpMessage>,
@@ -29,7 +29,7 @@ impl HttpHistory {
             false
         } else {
             self.messages.push(HttpMessage::Request {
-                request: req,
+                request: HttpRequest(req),
                 timestamp: Utc::now(),
             });
             true
@@ -41,7 +41,7 @@ impl HttpHistory {
             false
         } else {
             self.messages.push(HttpMessage::Response {
-                response: resp,
+                response: HttpResponse(resp),
                 timestamp: Utc::now(),
             });
             true
