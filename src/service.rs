@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::filter::Filter;
 use crate::http::HttpConfig;
-use crate::proxy::Filter;
 use crate::tls::TlsConfig;
 
 #[derive(Debug, Clone)]

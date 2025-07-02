@@ -1,0 +1,23 @@
+service_name: Test TLS
+client_ip: 0.0.0.0
+client_port: 9443
+server_ip: 0.0.0.0
+server_port: 8443
+script_path: ./test/filter.py
+client_max_history: 100Mib
+client_timeout: 10s
+
+tls_enabled: true
+tls_cert_file: ./test/keys/cert.pem
+tls_key_file: ./test/keys/key.pem
+#tls_ca_file: ./test/keys/ca-cert.pem
+
+dump_enabled: true
+dump_path: "./pcaps"
+dump_format: "{service}_{server_port}_{timestamp}.pcap"
+dump_interval: 30s
+
+
+http_enabled: true
+http_max_body: 10Mb
+http_keep_alive: true

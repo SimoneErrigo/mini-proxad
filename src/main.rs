@@ -1,4 +1,5 @@
 mod config;
+mod filter;
 mod flow;
 mod http;
 mod proxy;
@@ -14,7 +15,8 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::Config;
-use crate::proxy::{Filter, Proxy};
+use crate::filter::Filter;
+use crate::proxy::Proxy;
 use crate::service::Service;
 
 #[derive(Debug, Clone, Parser)]

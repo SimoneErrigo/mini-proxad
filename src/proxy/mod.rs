@@ -1,10 +1,9 @@
 mod acceptor;
 mod connector;
 mod dumper;
-mod filter;
 
 use crate::config::Config;
-use crate::flow::history::{HttpHistory, RawChunk, RawHistory};
+use crate::flow::history::{RawChunk, RawHistory};
 use crate::flow::{Flow, HttpFlow, RawFlow};
 use crate::http::BytesBody;
 use crate::proxy::acceptor::Acceptor;
@@ -13,24 +12,25 @@ use crate::proxy::dumper::{Dumper, DumperChannel};
 use crate::service::Service;
 use crate::stream::{ChunkRead, ChunkStream, ChunkWrite};
 
+use crate::filter::Filter;
 use anyhow::Context;
 use chrono::Utc;
+use http::HeaderValue;
+use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http_body_util::{BodyExt, Empty, Full, Limited, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming as IncomingBody};
 use hyper::service::Service as HyperService;
 use hyper::{Request, Response};
-use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::rt::TokioIo;
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use tokio::time::{self, timeout};
+use tokio::time;
 use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, trace, warn};
-
-pub use crate::proxy::filter::Filter;
 
 pub type ProxyStream = Pin<Box<dyn ChunkStream>>;
 
@@ -388,9 +388,15 @@ impl ProxyHyper {
             .boxed()
     }
 
-    async fn push_request(&self, req: Request<Bytes>, len: usize) -> anyhow::Result<()> {
+    async fn push_request(&self, mut req: Request<Bytes>, len: usize) -> anyhow::Result<()> {
         info!("Client requested {} {}", req.method(), req.uri());
         trace!("{:#?}", req);
+
+        if req.headers().contains_key(TRANSFER_ENCODING) {
+            req.headers_mut().remove(TRANSFER_ENCODING);
+            req.headers_mut()
+                .insert(CONTENT_LENGTH, HeaderValue::from(len));
+        }
 
         let mut guard = self.inner.lock().await;
         if !guard.flow.history.push_request(req, len) {
@@ -400,9 +406,15 @@ impl ProxyHyper {
         }
     }
 
-    async fn push_response(&self, resp: Response<Bytes>, len: usize) -> anyhow::Result<()> {
+    async fn push_response(&self, mut resp: Response<Bytes>, len: usize) -> anyhow::Result<()> {
         info!("Server responded with {}", resp.status().as_u16());
         trace!("{:#?}", resp);
+
+        if resp.headers().contains_key(TRANSFER_ENCODING) {
+            resp.headers_mut().remove(TRANSFER_ENCODING);
+            resp.headers_mut()
+                .insert(CONTENT_LENGTH, HeaderValue::from(len));
+        }
 
         let mut guard = self.inner.lock().await;
         if !guard.flow.history.push_response(resp, len) {
