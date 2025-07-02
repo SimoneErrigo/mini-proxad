@@ -1,4 +1,4 @@
-service_name: Test TLS
+service_name: Test HTTPS
 client_ip: 0.0.0.0
 client_port: 9443
 server_ip: 0.0.0.0

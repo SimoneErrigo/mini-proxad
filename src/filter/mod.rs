@@ -96,18 +96,25 @@ impl Filter {
                 let module = module.bind(py);
                 let filter_name = intern!(py, "http_filter");
                 let func = module.getattr(filter_name)?;
-                let args = (
-                    flow.id,
-                    flow.history
-                        .messages
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
-                        .into_pyobject(py)?,
-                );
+
+                let resp = flow
+                    .history
+                    .messages
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
+                    .into_pyobject(py)?;
 
                 debug!("Running filter {} for flow {}", filter_name, flow.id);
-                Ok(func.call1(args)?.extract()?)
+                let args = (flow.id, &resp);
+                let result = func.call1(args)?;
+
+                if result.is(resp) {
+                    trace!("Python returned the original response, ignoring");
+                    Ok(Either::Left(None))
+                } else {
+                    Ok(result.extract()?)
+                }
             });
 
         match result {

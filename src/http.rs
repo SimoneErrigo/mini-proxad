@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use http::header::CONTENT_LENGTH;
 use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response, service::HttpService};
@@ -266,6 +267,9 @@ impl<'py> FromPyObject<'py> for HttpResponse {
 
         for (k, v) in headers.iter() {
             let k: &str = k.extract()?;
+            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str()) {
+                continue;
+            }
             let v: &str = v.extract()?;
             builder = builder.header(k, v);
         }

@@ -197,4 +197,7 @@ def server_filter_history(
 
 def http_filter(id, resp):
     print(id)
+
     print(resp)
+    resp.body = resp.body.replace(b"world", b"FLAG")
+    return resp

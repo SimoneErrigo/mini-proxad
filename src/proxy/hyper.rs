@@ -9,6 +9,7 @@ use hyper::{Request, Response};
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::time;
 use tracing::{error, info, trace};
 
 use crate::flow::{HttpFlow, IsFlow};
@@ -166,7 +167,13 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
 
             let body_len = body.len();
             let history_resp = Response::from_parts(parts, body);
-            service.push_response(history_resp, body_len).await?;
+
+            let timeout = service.proxy.inner.service.server_timeout;
+            match time::timeout(timeout, service.push_response(history_resp, body_len)).await {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => anyhow::bail!("Server timeout elapsed"),
+            };
 
             let resp = {
                 let mut guard = service.inner.lock().await;
