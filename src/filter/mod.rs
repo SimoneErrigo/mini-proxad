@@ -1,3 +1,5 @@
+mod api;
+
 use crate::flow::history::RawHistory;
 use crate::flow::{HttpFlow, RawFlow};
 use anyhow::Context;
@@ -5,7 +7,7 @@ use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use pyo3::ffi::c_str;
-use pyo3::types::{PyBytes, PyEllipsis, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyEllipsis, PyModule};
 use pyo3::{intern, prelude::*};
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -26,6 +28,22 @@ pub struct Filter {
 }
 
 impl Filter {
+    pub fn load_api() -> anyhow::Result<()> {
+        Python::with_gil(|py| {
+            let module = PyModule::new(py, "proxad")?;
+            api::register(&module)?;
+
+            let sys = PyModule::import(py, "sys").unwrap();
+            let py_modules: Bound<'_, PyDict> =
+                sys.getattr("modules").unwrap().downcast_into().unwrap();
+            py_modules
+                .set_item("proxad", module)
+                .expect("Failed to import adders");
+
+            Ok(())
+        })
+    }
+
     // TODO: Check if filters are actually there
     pub fn load_from_file(path: &str) -> anyhow::Result<Filter> {
         let path = CString::new(path)?;

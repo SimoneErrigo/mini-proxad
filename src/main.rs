@@ -72,6 +72,13 @@ async fn main() {
         }
     };
 
+    if config.python_script.is_some() {
+        match Filter::load_api() {
+            Ok(()) => debug!("Loaded api python module"),
+            Err(e) => error!("Failed to load api python module: {}", e),
+        }
+    }
+
     let filter = config
         .python_script
         .as_ref()
