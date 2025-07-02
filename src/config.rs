@@ -68,6 +68,7 @@ pub struct Config {
     #[serde(default = "default_max_packets")]
     pub dump_max_packets: usize,
 
+    #[serde(default)]
     pub http_enabled: bool,
 
     #[serde(default = "default_max_body")]

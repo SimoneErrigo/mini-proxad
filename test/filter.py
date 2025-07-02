@@ -35,7 +35,9 @@ HTTP_SESSION_COOKIE = b"session"
 HTTP_SESSION_TTL = 30  # seconds
 HTTP_SESSION_LIMIT = 4000
 
-HTTP_SESSION_GET_REGEX = re.compile(rb"Cookie:\s*" + HTTP_SESSION_COOKIE + rb"=([^;]+)")
+HTTP_SESSION_GET_REGEX = re.compile(
+    rb"Cookie:\s*" + HTTP_SESSION_COOKIE + rb"=([^;\r\n]+)"
+)
 HTTP_SESSION_SET_REGEX = re.compile(
     rb"Set-Cookie:\s*" + HTTP_SESSION_COOKIE + rb"=([^;]+)"
 )

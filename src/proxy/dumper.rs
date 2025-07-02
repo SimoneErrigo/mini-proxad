@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::anyhow;
+use chrono::DateTime;
 use chrono::Utc;
 use etherparse::PacketBuilder;
 use pcap_file::pcap::{PcapPacket, PcapWriter};
@@ -13,9 +14,12 @@ use std::sync::mpsc;
 use std::{path::PathBuf, time::Duration};
 use tempfile::NamedTempFile;
 use tokio::time::Instant;
+use tracing::trace;
 use tracing::{debug, error, info, warn};
 
 use crate::flow::Flow;
+use crate::flow::IsFlow;
+use crate::flow::RawFlow;
 use crate::{config::Config, service::Service};
 
 const DUMP_CHANNEL_LIMIT: usize = 400;
@@ -49,9 +53,7 @@ impl Dumper {
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 tokio::fs::create_dir_all(&path).await?;
             }
-            Err(e) => {
-                Err(e)?;
-            }
+            Err(e) => Err(e)?,
         }
 
         let interval = config
@@ -86,7 +88,11 @@ impl Dumper {
             rx,
         };
 
-        tokio::task::spawn_blocking(move || dumper.dumper());
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = dumper.dumper() {
+                error!("Dumper crashed: {:?}", e);
+            }
+        });
         Ok(tx)
     }
 
@@ -110,12 +116,13 @@ impl Dumper {
                 match self.rx.recv_timeout(timeout) {
                     Ok(flow) => match Self::write_tcp_flow(&mut writer, &flow) {
                         Ok(n) => n_packets += n,
-                        Err(e) => warn!("Failed to dump pcaps for flow {}: {:?}", flow.id, e),
+                        Err(e) => {
+                            warn!("Failed to dump pcaps for flow {}: {:?}", flow.get_id(), e)
+                        }
                     },
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        warn!("Dumper channel closed");
-                        break;
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(e @ mpsc::RecvTimeoutError::Disconnected) => {
+                        Err(e).context("Dumper channel closed")?
                     }
                 }
             }
@@ -158,19 +165,31 @@ impl Dumper {
         Ok(())
     }
 
+    fn make_timestamp(timestamp: DateTime<Utc>) -> Duration {
+        Duration::new(
+            timestamp.timestamp() as u64,
+            timestamp.timestamp_subsec_nanos(),
+        )
+    }
+
     fn write_tcp_flow(writer: &mut PcapWriter<&mut File>, flow: &Flow) -> anyhow::Result<usize> {
-        let src_ip = match flow.client_addr.ip() {
+        let client_addr = flow.get_client_addr();
+        let server_addr = flow.get_server_addr();
+
+        trace!("Dumping TCP packets for flow {}", flow.get_id());
+
+        let src_ip = match client_addr.ip() {
             std::net::IpAddr::V4(ip) => ip,
             _ => anyhow::bail!("Only IPv4 supported"),
         };
 
-        let dst_ip = match flow.server_addr.ip() {
+        let dst_ip = match server_addr.ip() {
             std::net::IpAddr::V4(ip) => ip,
             _ => anyhow::bail!("Only IPv4 supported"),
         };
 
-        let src_port = flow.client_addr.port();
-        let dst_port = flow.server_addr.port();
+        let src_port = client_addr.port();
+        let dst_port = server_addr.port();
 
         let mut seq_client = 1_000;
         let mut seq_server = 1_000_000;
@@ -181,19 +200,7 @@ impl Dumper {
         let max_payload = MTU_LEN - header_size;
 
         let mut n_packets = 0;
-
-        let mut timestamp = flow
-            .client_history
-            .chunks
-            .first()
-            .map(|chunk| chunk.timestamp)
-            .map(|timestamp| {
-                Duration::new(
-                    timestamp.timestamp() as u64,
-                    timestamp.timestamp_subsec_nanos(),
-                )
-            })
-            .ok_or_else(|| anyhow!("Malformed flow with no chunks"))?;
+        let mut timestamp = Self::make_timestamp(flow.get_start());
 
         Self::write_tcp_handshake(
             writer,
@@ -211,19 +218,9 @@ impl Dumper {
         let mut last_was_client = false;
 
         // TODO: Coalesce consecutive chunks coming from the same source
-        for (addr, chunk) in flow.into_iter() {
-            timestamp = Duration::new(
-                chunk.timestamp.timestamp() as u64,
-                chunk.timestamp.timestamp_subsec_nanos(),
-            );
-
-            let bytes = if addr == flow.client_addr {
-                last_was_client = true;
-                &flow.client_history.bytes[chunk.range.clone()]
-            } else {
-                last_was_client = false;
-                &flow.server_history.bytes[chunk.range.clone()]
-            };
+        for (addr, ts, bytes) in flow.into_iter() {
+            timestamp = Self::make_timestamp(ts);
+            last_was_client = addr == client_addr;
 
             let mut offset = 0;
             while offset < bytes.len() {
@@ -231,7 +228,7 @@ impl Dumper {
                 let bytes = &bytes[offset..end];
                 offset = end;
 
-                let (seq, ack, src, dst, sport, dport) = if addr == flow.client_addr {
+                let (seq, ack, src, dst, sport, dport) = if last_was_client {
                     (seq_client, ack_client, src_ip, dst_ip, src_port, dst_port)
                 } else {
                     (seq_server, ack_server, dst_ip, src_ip, dst_port, src_port)
@@ -249,7 +246,7 @@ impl Dumper {
                 n_packets += 1;
 
                 // Update seq/ack numbers per side
-                if addr == flow.client_addr {
+                if last_was_client {
                     seq_client = seq_client.wrapping_add(bytes.len() as u32);
                     ack_server = seq_client;
                 } else {
@@ -292,6 +289,59 @@ impl Dumper {
 
         Ok(n_packets)
     }
+
+    //fn write_tcp_raw(flow: &RawFlow) -> anyhow::Result<()> {
+    //    // TODO: Coalesce consecutive chunks coming from the same source
+    //    for (addr, chunk) in flow.into_iter() {
+    //        timestamp = Duration::new(
+    //            chunk.timestamp.timestamp() as u64,
+    //            chunk.timestamp.timestamp_subsec_nanos(),
+    //        );
+
+    //        let bytes = if addr == flow.client_addr {
+    //            last_was_client = true;
+    //            &flow.client_history.bytes[chunk.range.clone()]
+    //        } else {
+    //            last_was_client = false;
+    //            &flow.server_history.bytes[chunk.range.clone()]
+    //        };
+
+    //        let mut offset = 0;
+    //        while offset < bytes.len() {
+    //            let end = (offset + max_payload).min(bytes.len());
+    //            let bytes = &bytes[offset..end];
+    //            offset = end;
+
+    //            let (seq, ack, src, dst, sport, dport) = if addr == flow.get_client_addr() {
+    //                (seq_client, ack_client, src_ip, dst_ip, src_port, dst_port)
+    //            } else {
+    //                (seq_server, ack_server, dst_ip, src_ip, dst_port, src_port)
+    //            };
+
+    //            let mut flags = 0x10; // ACK
+    //            if end == bytes.len() {
+    //                flags |= 0x08; // PSH
+    //            }
+
+    //            Self::write_tcp_packet(
+    //                writer, timestamp, src, dst, sport, dport, seq, ack, flags, bytes,
+    //            )?;
+
+    //            n_packets += 1;
+
+    //            // Update seq/ack numbers per side
+    //            if addr == flow.client_addr {
+    //                seq_client = seq_client.wrapping_add(bytes.len() as u32);
+    //                ack_server = seq_client;
+    //            } else {
+    //                seq_server = seq_server.wrapping_add(bytes.len() as u32);
+    //                ack_client = seq_server;
+    //            }
+    //        }
+    //    }
+
+    //    Ok(())
+    //}
 
     fn write_tcp_handshake(
         writer: &mut PcapWriter<&mut File>,

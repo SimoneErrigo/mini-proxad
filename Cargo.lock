@@ -944,6 +944,7 @@ dependencies = [
  "etherparse",
  "futures",
  "futures-util",
+ "http",
  "http-body-util",
  "humantime-serde",
  "hyper",

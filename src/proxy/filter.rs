@@ -1,4 +1,5 @@
-use crate::flow::{Flow, History};
+use crate::flow::RawFlow;
+use crate::flow::history::RawHistory;
 use anyhow::Context;
 use either::Either;
 use futures_util::StreamExt;
@@ -46,7 +47,7 @@ impl Filter {
     fn apply_result(
         &self,
         result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>>,
-        history: &mut History,
+        history: &mut RawHistory,
     ) -> ControlFlow<()> {
         match result {
             // Kill connection on ellipses
@@ -69,7 +70,7 @@ impl Filter {
     }
 
     // TODO: Unify functions
-    pub async fn on_client_chunk(&self, flow: &mut Flow) -> ControlFlow<()> {
+    pub async fn on_client_chunk(&self, flow: &mut RawFlow) -> ControlFlow<()> {
         let module = self.module.read().await;
         let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
             Python::with_gil(|py| {
@@ -102,7 +103,7 @@ impl Filter {
         self.apply_result(result, &mut flow.client_history)
     }
 
-    pub async fn on_server_chunk(&self, flow: &mut Flow) -> ControlFlow<()> {
+    pub async fn on_server_chunk(&self, flow: &mut RawFlow) -> ControlFlow<()> {
         let module = self.module.read().await;
         let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
             Python::with_gil(|py| {
@@ -135,9 +136,9 @@ impl Filter {
         self.apply_result(result, &mut flow.server_history)
     }
 
-    pub async fn on_flow_start(&self, _flow: &mut Flow) {}
+    pub async fn on_flow_start(&self, _flow: &mut RawFlow) {}
 
-    pub async fn on_flow_close(&self, _flow: &mut Flow) {}
+    pub async fn on_flow_close(&self, _flow: &mut RawFlow) {}
 
     pub async fn spawn_watcher(self: Arc<Self>) -> anyhow::Result<()> {
         let inotify = Inotify::init().context("Failed to initialize inotify")?;

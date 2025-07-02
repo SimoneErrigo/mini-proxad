@@ -4,7 +4,8 @@ mod dumper;
 mod filter;
 
 use crate::config::Config;
-use crate::flow::{Flow, History, HttpHistory, RawChunk};
+use crate::flow::history::{HttpHistory, RawChunk, RawHistory};
+use crate::flow::{Flow, HttpFlow, RawFlow};
 use crate::http::BytesBody;
 use crate::proxy::acceptor::Acceptor;
 use crate::proxy::connector::Connector;
@@ -15,17 +16,17 @@ use crate::stream::{ChunkRead, ChunkStream, ChunkWrite};
 use anyhow::Context;
 use chrono::Utc;
 use http_body_util::{BodyExt, Empty, Full, Limited, combinators::BoxBody};
-use hyper::body::{Body, Bytes, Incoming as IncomingBody};
+use hyper::body::{Bytes, Incoming as IncomingBody};
 use hyper::service::Service as HyperService;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use tokio::time;
+use tokio::time::{self, timeout};
 use tokio::{select, task::JoinHandle};
 use tracing::{debug, info, trace, warn};
 
@@ -117,32 +118,55 @@ impl Proxy {
             };
 
             let proxy = self.clone();
+            let dumper = self.inner.dumper.clone();
 
             if let Some(http) = self.inner.service.http_config.clone() {
+                let flow = HttpFlow::new(
+                    client_addr,
+                    self.inner.service.client_max_history,
+                    self.inner.service.server_addr,
+                    self.inner.service.server_max_history,
+                );
+
                 let client_io = TokioIo::new(client);
                 let server_io = TokioIo::new(server);
 
                 if let Ok((sender, conn)) = http.client_builder().handshake(server_io).await {
-                    tokio::spawn(async move {
-                        if let Err(e) = conn.await {
-                            warn!("Upstream HTTP connection error: {:?}", e);
+                    let upstream = tokio::spawn(async move {
+                        match conn.await {
+                            Ok(_) => debug!("Upstream HTTP connection closed"),
+                            Err(e) => warn!("Upstream HTTP connection error: {:?}", e),
                         }
                     });
 
-                    let service = ProxyHyper::new(proxy, sender, http.max_body);
+                    let service = ProxyHyper::new(proxy, sender, http.max_body, flow);
+                    let inner = service.inner.clone();
+
                     tokio::task::spawn(async move {
                         match http
                             .server_builder()
                             .serve_connection(client_io, service)
                             .await
                         {
-                            Ok(_) => info!("OK"),
-                            Err(e) => warn!("Error: {}", e),
+                            Ok(_) => info!("Closed HTTP flow from {}", client_addr),
+                            Err(e) => warn!("Error in flow from {}: {:?}", client_addr, e),
+                        };
+
+                        upstream.abort();
+
+                        if let Ok(mutex) = Arc::try_unwrap(inner) {
+                            let flow = mutex.into_inner().flow;
+
+                            if let Some(ref channel) = dumper {
+                                if let Err(e) = channel.try_send(Flow::Http(flow)) {
+                                    warn!("Could not send flow to dumper: {}", e);
+                                }
+                            }
                         }
                     });
                 }
             } else {
-                let mut flow = Flow::new(
+                let mut flow = RawFlow::new(
                     client_addr,
                     self.inner.service.client_max_history,
                     self.inner.service.server_addr,
@@ -164,8 +188,8 @@ impl Proxy {
                         flow.id,
                     );
 
-                    if let Some(ref channel) = proxy.inner.dumper {
-                        if let Err(e) = channel.try_send(flow) {
+                    if let Some(ref channel) = dumper {
+                        if let Err(e) = channel.try_send(Flow::Raw(flow)) {
                             warn!("Could not send flow to dumper: {}", e);
                         }
                     }
@@ -176,7 +200,7 @@ impl Proxy {
 
     pub async fn read_chunk<R: ChunkRead>(
         stream: &mut R,
-        history: &mut History,
+        history: &mut RawHistory,
         timeout: Duration,
     ) -> anyhow::Result<FlowStatus> {
         let start = history.bytes.len();
@@ -203,7 +227,7 @@ impl Proxy {
 
     pub async fn write_last_chunk<W: ChunkWrite>(
         stream: &mut W,
-        history: &History,
+        history: &RawHistory,
         timeout: Duration,
     ) -> anyhow::Result<()> {
         let future = async {
@@ -223,7 +247,7 @@ impl Proxy {
         &self,
         mut client: ProxyStream,
         mut server: ProxyStream,
-        flow: &mut Flow,
+        flow: &mut RawFlow,
     ) -> anyhow::Result<()> {
         let client_timeout = self.inner.service.client_timeout;
         let server_timeout = self.inner.service.server_timeout;
@@ -323,7 +347,8 @@ use hyper::client::conn::http1::SendRequest;
 
 struct ProxyHyperInner {
     sender: SendRequest<BytesBody>,
-    history: HttpHistory,
+    flow: HttpFlow,
+    error: Option<anyhow::Error>,
 }
 
 #[derive(Clone)]
@@ -334,12 +359,18 @@ struct ProxyHyper {
 }
 
 impl ProxyHyper {
-    pub fn new(proxy: Proxy, sender: SendRequest<BytesBody>, max_body: u64) -> ProxyHyper {
+    pub fn new(
+        proxy: Proxy,
+        sender: SendRequest<BytesBody>,
+        max_body: u64,
+        flow: HttpFlow,
+    ) -> ProxyHyper {
         ProxyHyper {
             proxy,
             inner: Arc::new(Mutex::new(ProxyHyperInner {
                 sender,
-                history: HttpHistory::new(),
+                flow,
+                error: None,
             })),
             max_body,
         }
@@ -356,49 +387,96 @@ impl ProxyHyper {
             .map_err(|never| match never {})
             .boxed()
     }
+
+    async fn push_request(&self, req: Request<Bytes>, len: usize) -> anyhow::Result<()> {
+        info!("Client requested {} {}", req.method(), req.uri());
+        trace!("{:#?}", req);
+
+        let mut guard = self.inner.lock().await;
+        if !guard.flow.history.push_request(req, len) {
+            Err(anyhow::anyhow!("Client history too big"))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn push_response(&self, resp: Response<Bytes>, len: usize) -> anyhow::Result<()> {
+        info!("Server responded with {}", resp.status().as_u16());
+        trace!("{:#?}", resp);
+
+        let mut guard = self.inner.lock().await;
+        if !guard.flow.history.push_response(resp, len) {
+            Err(anyhow::anyhow!("Server history too big"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl HyperService<Request<IncomingBody>> for ProxyHyper {
     type Response = Response<BoxBody<Bytes, hyper::Error>>;
-    type Error = hyper::Error;
+    type Error = anyhow::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
+        const RESPONSE_TOO_BIG: &str = "Response body too big";
+        const REQUEST_TOO_BIG: &str = "Response body too big";
+
         let service = self.clone();
         Box::pin(async move {
-            let body_len = req.body().size_hint().upper().unwrap_or(u64::MAX);
-            if body_len > service.max_body {
-                let error = "Body too big";
-
-                let (parts, _) = req.into_parts();
-                let history_req = Request::from_parts(parts, Self::full(error));
-
-                let mut resp = Response::new(Self::full(error));
-                *resp.status_mut() = hyper::StatusCode::PAYLOAD_TOO_LARGE;
-
-                let mut history_resp = Response::new(Self::full(error));
-                *history_resp.status_mut() = hyper::StatusCode::PAYLOAD_TOO_LARGE;
-
-                return Ok(resp);
+            if let Some(error) = service.inner.lock().await.error.take() {
+                return Err(error);
             }
 
+            // Make a copy of the request
             let (parts, incoming) = req.into_parts();
-            let body = incoming.collect().await?.to_bytes();
+            let body = match Limited::new(incoming, service.max_body as usize)
+                .collect()
+                .await
+            {
+                Ok(body) => body.to_bytes(),
+                Err(_) => {
+                    let history_req = Request::from_parts(parts, Bytes::from(REQUEST_TOO_BIG));
+                    service.push_request(history_req, 0).await?;
+
+                    let mut resp = Response::new(Self::full(REQUEST_TOO_BIG));
+                    *resp.status_mut() = hyper::StatusCode::PAYLOAD_TOO_LARGE;
+
+                    let mut history_resp = Response::new(Bytes::from(REQUEST_TOO_BIG));
+                    *history_resp.status_mut() = hyper::StatusCode::PAYLOAD_TOO_LARGE;
+                    service.push_response(history_resp, 0).await?;
+
+                    // Flag connection as dead
+                    service.inner.lock().await.error = Some(anyhow::anyhow!(REQUEST_TOO_BIG));
+                    return Ok(resp);
+                }
+            };
 
             let history_req = Request::from_parts(parts.clone(), body.clone());
+            service.push_request(history_req, body.len()).await?;
+
+            // Send the request to the real service
             let req = Request::from_parts(parts, Self::full(body));
-
-            info!("REQUEST {:#?}", history_req);
-
             let resp = service.inner.lock().await.sender.send_request(req).await?;
 
+            // Make a copy of the response
             let (parts, incoming) = resp.into_parts();
-            let body = incoming.collect().await?.to_bytes();
+            let body = match Limited::new(incoming, service.max_body as usize)
+                .collect()
+                .await
+            {
+                Ok(body) => body.to_bytes(),
+                Err(_) => {
+                    let resp = Response::from_parts(parts.clone(), Bytes::from(RESPONSE_TOO_BIG));
+                    service.push_response(resp, 0).await?;
+                    return Err(anyhow::anyhow!(RESPONSE_TOO_BIG));
+                }
+            };
 
             let history_resp = Response::from_parts(parts.clone(), body.clone());
-            let resp = Response::from_parts(parts, Self::full(body));
+            service.push_response(history_resp, body.len()).await?;
 
-            info!("RESPONSE {:#?}", history_resp);
+            let resp = Response::from_parts(parts, Self::full(body));
             Ok(resp)
         })
     }

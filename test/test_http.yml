@@ -8,10 +8,11 @@ server_timeout: 30s
 tls_enabled: false
 #script_path: ./test/filter.py
 
-dump_enabled: false
+dump_enabled: true
 dump_path: "./pcaps"
 dump_format: "{service}_{server_port}_{timestamp}.pcap"
 dump_interval: 30s
 
 
 http_enabled: true
+http_max_body: 100Mb
