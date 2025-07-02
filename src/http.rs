@@ -56,11 +56,11 @@ impl HttpConfig {
 
 pub enum HttpMessage {
     Response {
-        response: Arc<Response<Bytes>>,
+        response: Response<Bytes>,
         timestamp: DateTime<Utc>,
     },
     Request {
-        request: Arc<Request<Bytes>>,
+        request: Request<Bytes>,
         timestamp: DateTime<Utc>,
     },
 }

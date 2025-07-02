@@ -46,9 +46,10 @@ struct ProxyInner {
     dumper: Option<DumperChannel>,
 }
 
+#[macro_export]
 macro_rules! run_filter {
     ($proxy:expr, $method:ident, $arg:expr, $on_break:block) => {
-        if let Some(ref filter) = $proxy.inner.service.filter.clone() {
+        if let Some(ref filter) = $proxy.inner.service.filter {
             if let ControlFlow::Break(_) = filter.$method($arg).await {
                 $on_break
             }
@@ -191,50 +192,6 @@ impl Proxy {
         }
     }
 
-    pub async fn read_chunk<R: ChunkRead>(
-        stream: &mut R,
-        history: &mut RawHistory,
-        timeout: Duration,
-    ) -> anyhow::Result<FlowStatus> {
-        let start = history.bytes.len();
-        let future = stream.read_chunk(&mut history.bytes);
-
-        match time::timeout(timeout, future).await {
-            Ok(Ok(0)) => Ok(FlowStatus::Closed),
-            Ok(Ok(n)) => {
-                history.chunks.push(RawChunk {
-                    range: start..start + n,
-                    timestamp: Utc::now(),
-                });
-
-                if start + n >= history.max_size {
-                    Ok(FlowStatus::HistoryTooBig)
-                } else {
-                    Ok(FlowStatus::Read)
-                }
-            }
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => Ok(FlowStatus::Timeout),
-        }
-    }
-
-    pub async fn write_last_chunk<W: ChunkWrite>(
-        stream: &mut W,
-        history: &RawHistory,
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        let future = async {
-            stream.write_chunk(history.last_chunk()).await?;
-            stream.flush().await?;
-            Ok(())
-        };
-
-        match time::timeout(timeout, future).await {
-            Ok(ok) => ok,
-            Err(e) => Err(e.into()),
-        }
-    }
-
     #[tracing::instrument(level = "trace", skip_all)]
     async fn handle_flow(
         &self,
@@ -333,5 +290,49 @@ impl Proxy {
         server.shutdown().await?;
 
         Ok(())
+    }
+
+    pub async fn read_chunk<R: ChunkRead>(
+        stream: &mut R,
+        history: &mut RawHistory,
+        timeout: Duration,
+    ) -> anyhow::Result<FlowStatus> {
+        let start = history.bytes.len();
+        let future = stream.read_chunk(&mut history.bytes);
+
+        match time::timeout(timeout, future).await {
+            Ok(Ok(0)) => Ok(FlowStatus::Closed),
+            Ok(Ok(n)) => {
+                history.chunks.push(RawChunk {
+                    range: start..start + n,
+                    timestamp: Utc::now(),
+                });
+
+                if start + n >= history.max_size {
+                    Ok(FlowStatus::HistoryTooBig)
+                } else {
+                    Ok(FlowStatus::Read)
+                }
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Ok(FlowStatus::Timeout),
+        }
+    }
+
+    pub async fn write_last_chunk<W: ChunkWrite>(
+        stream: &mut W,
+        history: &RawHistory,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let future = async {
+            stream.write_chunk(history.last_chunk()).await?;
+            stream.flush().await?;
+            Ok(())
+        };
+
+        match time::timeout(timeout, future).await {
+            Ok(ok) => ok,
+            Err(e) => Err(e.into()),
+        }
     }
 }

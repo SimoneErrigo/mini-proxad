@@ -1,5 +1,5 @@
-use crate::flow::RawFlow;
 use crate::flow::history::RawHistory;
+use crate::flow::{HttpFlow, RawFlow};
 use anyhow::Context;
 use either::Either;
 use futures_util::StreamExt;
@@ -66,6 +66,10 @@ impl Filter {
             Ok(Either::Left(None)) => (),
             Err(e) => warn!("Failed to run python filter: {}", e),
         };
+        ControlFlow::Continue(())
+    }
+
+    pub async fn on_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }
 

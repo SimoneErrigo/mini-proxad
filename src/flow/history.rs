@@ -29,7 +29,7 @@ impl HttpHistory {
             false
         } else {
             self.messages.push(HttpMessage::Request {
-                request: Arc::new(req),
+                request: req,
                 timestamp: Utc::now(),
             });
             true
@@ -41,7 +41,7 @@ impl HttpHistory {
             false
         } else {
             self.messages.push(HttpMessage::Response {
-                response: Arc::new(resp),
+                response: resp,
                 timestamp: Utc::now(),
             });
             true

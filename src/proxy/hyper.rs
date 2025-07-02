@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::lock::Mutex;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
@@ -8,12 +6,15 @@ use hyper::body::{Bytes, Incoming as IncomingBody};
 use hyper::client::conn::http1::SendRequest;
 use hyper::service::Service as HyperService;
 use hyper::{Request, Response};
+use std::ops::ControlFlow;
 use std::pin::Pin;
-use tracing::{info, trace};
+use std::sync::Arc;
+use tracing::{error, info, trace};
 
-use crate::flow::HttpFlow;
-use crate::http::BytesBody;
+use crate::flow::{HttpFlow, IsFlow};
+use crate::http::{BytesBody, HttpMessage};
 use crate::proxy::Proxy;
+use crate::run_filter;
 
 struct ProxyHyperInner {
     sender: SendRequest<BytesBody>,
@@ -24,8 +25,8 @@ struct ProxyHyperInner {
 #[derive(Clone)]
 pub struct ProxyHyper {
     pub proxy: Proxy,
-    pub inner: Arc<Mutex<ProxyHyperInner>>,
     pub max_body: u64,
+    inner: Arc<Mutex<ProxyHyperInner>>,
 }
 
 impl ProxyHyper {
@@ -37,12 +38,12 @@ impl ProxyHyper {
     ) -> ProxyHyper {
         ProxyHyper {
             proxy,
+            max_body,
             inner: Arc::new(Mutex::new(ProxyHyperInner {
                 sender,
                 flow,
                 error: None,
             })),
-            max_body,
         }
     }
 
@@ -163,10 +164,32 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
                 }
             };
 
-            let history_resp = Response::from_parts(parts.clone(), body.clone());
-            service.push_response(history_resp, body.len()).await?;
+            let body_len = body.len();
+            let history_resp = Response::from_parts(parts, body);
+            service.push_response(history_resp, body_len).await?;
 
-            let resp = Response::from_parts(parts, Self::full(body));
+            let resp = {
+                let mut guard = service.inner.lock().await;
+                run_filter!(service.proxy, on_response, &mut guard.flow, {
+                    info!("Python server filter killed flow {}", guard.flow.get_id());
+                    return Err(anyhow::anyhow!("Killed"));
+                });
+
+                match guard.flow.history.messages.last() {
+                    Some(HttpMessage::Response { response, .. }) => {
+                        let (parts, body) = response.clone().into_parts();
+                        Response::from_parts(parts, Self::full(body))
+                    }
+                    _ => {
+                        error!(
+                            "Python filter did not return a HTTP response for flow {}",
+                            guard.flow.get_id()
+                        );
+                        return Err(anyhow::anyhow!("Invalid filter"));
+                    }
+                }
+            };
+
             Ok(resp)
         })
     }
