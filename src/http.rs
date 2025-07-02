@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use http::header::CONTENT_LENGTH;
+use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response, service::HttpService};
@@ -8,6 +8,7 @@ use hyper_util::rt::TokioTimer;
 use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods};
 use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use std::{io::Write, time::Duration};
+use tracing::trace;
 
 use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
 use crate::{config::Config, proxy::ProxyStream};
@@ -24,7 +25,6 @@ pub struct HttpConfig {
     pub date_header: bool,
     pub max_body: u64,
     pub client_timeout: Duration,
-    pub server_timeout: Duration,
 }
 
 impl HttpConfig {
@@ -35,7 +35,6 @@ impl HttpConfig {
             date_header: config.http_date_header,
             max_body: config.http_max_body.as_u64(),
             client_timeout: config.client_timeout,
-            server_timeout: config.server_timeout,
         })
     }
 
@@ -264,10 +263,11 @@ impl<'py> FromPyObject<'py> for HttpResponse {
         let body: &[u8] = msg.body.as_ref().extract(ob.py())?;
 
         let mut builder = Response::builder().status(status);
-
         for (k, v) in headers.iter() {
             let k: &str = k.extract()?;
-            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str()) {
+            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
+                || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
+            {
                 continue;
             }
             let v: &str = v.extract()?;

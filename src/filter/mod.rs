@@ -1,17 +1,13 @@
 pub mod api;
 
-use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
-use crate::flow::history::{HttpHistory, RawHistory};
-use crate::flow::{HttpFlow, RawFlow};
-use crate::http::{HttpMessage, HttpResponse};
 use anyhow::Context;
 use chrono::Utc;
 use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use pyo3::ffi::c_str;
-use pyo3::types::{PyBytes, PyDict, PyEllipsis, PyModule};
-use pyo3::{intern, prelude::*};
+use pyo3::types::{PyBytes, PyDict, PyEllipsis, PyModule, PyString};
+use pyo3::{IntoPyObjectExt, intern, prelude::*};
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::ops::ControlFlow;
@@ -22,12 +18,38 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 
+use crate::filter::api::PyHttpResponse;
+use crate::flow::history::RawHistory;
+use crate::flow::{HttpFlow, RawFlow};
+use crate::http::{HttpMessage, HttpResponse};
+
 const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(2);
+
+const HTTP_FILTER_FUNC: &str = "http_filter";
+const HTTP_OPEN_FUNC: &str = "http_open";
+const HTTP_CLOSE_FUNC: &str = "http_close";
+
+const RAW_CLIENT_FUNC: &str = "raw_client_filter";
+const RAW_SERVER_FUNC: &str = "raw_server_filter";
+const RAW_OPEN_FUNC: &str = "raw_open";
+const RAW_CLOSE_FUNC: &str = "raw_close";
 
 #[derive(Debug)]
 pub struct Filter {
     pub script_path: CString,
-    module: RwLock<Py<PyModule>>,
+    inner: RwLock<FilterModule>,
+}
+
+#[derive(Debug)]
+struct FilterModule {
+    module: Py<PyModule>,
+    http_filter: Option<Py<PyAny>>,
+    http_open: Option<Py<PyAny>>,
+    http_close: Option<Py<PyAny>>,
+    raw_client: Option<Py<PyAny>>,
+    raw_server: Option<Py<PyAny>>,
+    raw_open: Option<Py<PyAny>>,
+    raw_close: Option<Py<PyAny>>,
 }
 
 impl Filter {
@@ -46,25 +68,103 @@ impl Filter {
         })
     }
 
-    // TODO: Check if filters are actually there
     pub fn load_from_file(path: &str) -> anyhow::Result<Filter> {
         let path = CString::new(path)?;
         let module = Self::load_module(&path)?;
 
         Ok(Filter {
             script_path: path,
-            module: RwLock::new(module),
+            inner: RwLock::new(module),
         })
     }
 
-    fn load_module(path: &CStr) -> anyhow::Result<Py<PyModule>> {
+    fn load_module(path: &CStr) -> anyhow::Result<FilterModule> {
         let code = CString::new(fs::read(path.to_str()?)?)?;
         Python::with_gil(|py| {
-            Ok(PyModule::from_code(py, code.as_c_str(), path, c_str!("filter"))?.into())
+            let module = PyModule::from_code(py, code.as_c_str(), path, c_str!("filter"))?;
+            let clone = module.clone();
+
+            let load_function = |name: &Bound<PyString>| -> PyResult<Option<Py<PyAny>>> {
+                clone
+                    .getattr_opt(name)?
+                    .map(|bound| {
+                        debug!("Loaded python function {}", name);
+                        bound.into_py_any(py)
+                    })
+                    .transpose()
+            };
+
+            Ok(FilterModule {
+                module: module.into(),
+                http_filter: load_function(intern!(py, HTTP_FILTER_FUNC))?,
+                http_open: load_function(intern!(py, HTTP_OPEN_FUNC))?,
+                http_close: load_function(intern!(py, HTTP_CLOSE_FUNC))?,
+                raw_client: load_function(intern!(py, RAW_CLIENT_FUNC))?,
+                raw_server: load_function(intern!(py, RAW_SERVER_FUNC))?,
+                raw_open: load_function(intern!(py, RAW_OPEN_FUNC))?,
+                raw_close: load_function(intern!(py, RAW_CLOSE_FUNC))?,
+            })
         })
     }
 
-    fn apply_result(
+    pub async fn on_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+        if let Some(ref func) = self.inner.read().await.http_filter {
+            let result: anyhow::Result<Either<Option<Py<PyHttpResponse>>, Py<PyEllipsis>>> =
+                Python::with_gil(|py| {
+                    let resp = flow
+                        .history
+                        .messages
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Where is the response?"))?
+                        .into_pyobject(py)?;
+
+                    debug!("Running filter {} for flow {}", HTTP_FILTER_FUNC, flow.id);
+                    let args = (flow.id, &resp);
+                    let result = func.bind(py).call1(args)?;
+
+                    if result.is(resp) {
+                        trace!("Python returned the original response, ignoring");
+                        Ok(Either::Left(None))
+                    } else {
+                        Ok(result.extract()?)
+                    }
+                });
+
+            match result {
+                // Kill connection on ellipses
+                Ok(Either::Right(_)) => return ControlFlow::Break(()),
+                // Replace last chunk on bytes
+                Ok(Either::Left(Some(resp))) => {
+                    Python::with_gil(|py| match resp.extract::<HttpResponse>(py) {
+                        Ok(resp) => {
+                            trace!("Modified response: {:?}", resp);
+                            let last = flow.history.messages.last_mut().unwrap();
+                            *last = HttpMessage::Response {
+                                response: resp,
+                                timestamp: Utc::now(),
+                            }
+                        }
+                        Err(e) => warn!("Failed to convert bytes: {}", e),
+                    });
+                }
+                // Do nothing on none
+                Ok(Either::Left(None)) => (),
+                Err(e) => warn!("Failed to run python filter: {}", e),
+            };
+        };
+        ControlFlow::Continue(())
+    }
+
+    pub async fn on_http_open(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+        ControlFlow::Continue(())
+    }
+
+    pub async fn on_http_close(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+        ControlFlow::Continue(())
+    }
+
+    fn apply_raw_chunk(
         &self,
         result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>>,
         history: &mut RawHistory,
@@ -89,128 +189,71 @@ impl Filter {
         ControlFlow::Continue(())
     }
 
-    pub async fn on_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
-        let module = self.module.read().await;
-        let result: anyhow::Result<Either<Option<Py<PyHttpResponse>>, Py<PyEllipsis>>> =
-            Python::with_gil(|py| {
-                let module = module.bind(py);
-                let filter_name = intern!(py, "http_filter");
-                let func = module.getattr(filter_name)?;
+    pub async fn on_raw_client(&self, flow: &mut RawFlow) -> ControlFlow<()> {
+        if let Some(ref func) = self.inner.read().await.raw_client {
+            let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
+                Python::with_gil(|py| {
+                    let bytes = PyBytes::new(py, flow.client_history.last_chunk());
+                    let args = (
+                        flow.id,
+                        &bytes,
+                        &flow.client_history.bytes,
+                        &flow.server_history.bytes,
+                    );
 
-                let resp = flow
-                    .history
-                    .messages
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
-                    .into_pyobject(py)?;
+                    debug!("Running filter {} on flow {}", RAW_CLIENT_FUNC, flow.id);
+                    let result = func.bind(py).call1(args)?;
 
-                debug!("Running filter {} for flow {}", filter_name, flow.id);
-                let args = (flow.id, &resp);
-                let result = func.call1(args)?;
-
-                if result.is(resp) {
-                    trace!("Python returned the original response, ignoring");
-                    Ok(Either::Left(None))
-                } else {
-                    Ok(result.extract()?)
-                }
-            });
-
-        match result {
-            // Kill connection on ellipses
-            Ok(Either::Right(_)) => return ControlFlow::Break(()),
-            // Replace last chunk on bytes
-            Ok(Either::Left(Some(resp))) => {
-                Python::with_gil(|py| match resp.extract::<HttpResponse>(py) {
-                    Ok(resp) => {
-                        trace!("Modified response: {:?}", resp);
-                        let last = flow.history.messages.last_mut().unwrap();
-                        *last = HttpMessage::Response {
-                            response: resp,
-                            timestamp: Utc::now(),
-                        }
+                    if result.is(bytes) {
+                        trace!("Python returned the original response, ignoring");
+                        Ok(Either::Left(None))
+                    } else {
+                        Ok(result.extract()?)
                     }
-                    Err(e) => warn!("Failed to convert bytes: {}", e),
                 });
-            }
-            // Do nothing on none
-            Ok(Either::Left(None)) => (),
-            Err(e) => warn!("Failed to run python filter: {}", e),
-        };
+
+            self.apply_raw_chunk(result, &mut flow.client_history)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub async fn on_raw_server(&self, flow: &mut RawFlow) -> ControlFlow<()> {
+        if let Some(ref func) = self.inner.read().await.raw_server {
+            let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
+                Python::with_gil(|py| {
+                    let bytes = PyBytes::new(py, flow.server_history.last_chunk());
+                    let args = (
+                        flow.id,
+                        &bytes,
+                        &flow.client_history.bytes,
+                        &flow.server_history.bytes,
+                    );
+
+                    debug!("Running filter {} on flow {}", RAW_SERVER_FUNC, flow.id);
+                    let result = func.bind(py).call1(args)?;
+
+                    if result.is(bytes) {
+                        trace!("Python returned the original response, ignoring");
+                        Ok(Either::Left(None))
+                    } else {
+                        Ok(result.extract()?)
+                    }
+                });
+
+            self.apply_raw_chunk(result, &mut flow.server_history)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub async fn on_raw_open(&self, flow: &mut RawFlow) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }
 
-    // TODO: Unify functions
-    pub async fn on_client_chunk(&self, flow: &mut RawFlow) -> ControlFlow<()> {
-        let module = self.module.read().await;
-        let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
-            Python::with_gil(|py| {
-                let module = module.bind(py);
-                let filter_history_name = intern!(py, "client_filter_history");
-
-                if let Some(func) = module.getattr_opt(filter_history_name)? {
-                    let args = (
-                        flow.id,
-                        PyBytes::new(py, flow.client_history.last_chunk()),
-                        &flow.client_history.bytes,
-                        &flow.server_history.bytes,
-                    );
-
-                    debug!(
-                        "Running filter {} for flow {}",
-                        filter_history_name, flow.id
-                    );
-                    Ok(func.call1(args)?.extract()?)
-                } else {
-                    let filter_name = intern!(py, "client_filter");
-                    let func = module.getattr(filter_name)?;
-                    let args = (flow.id, PyBytes::new(py, flow.client_history.last_chunk()));
-
-                    debug!("Running filter {} for flow {}", filter_name, flow.id);
-                    Ok(func.call1(args)?.extract()?)
-                }
-            });
-
-        self.apply_result(result, &mut flow.client_history)
+    pub async fn on_raw_close(&self, flow: &mut RawFlow) -> ControlFlow<()> {
+        ControlFlow::Continue(())
     }
-
-    pub async fn on_server_chunk(&self, flow: &mut RawFlow) -> ControlFlow<()> {
-        let module = self.module.read().await;
-        let result: anyhow::Result<Either<Option<Py<PyBytes>>, Py<PyEllipsis>>> =
-            Python::with_gil(|py| {
-                let module = module.bind(py);
-                let filter_history_name = intern!(py, "server_filter_history");
-
-                if let Some(func) = module.getattr_opt(filter_history_name)? {
-                    let args = (
-                        flow.id,
-                        PyBytes::new(py, flow.server_history.last_chunk()),
-                        &flow.client_history.bytes,
-                        &flow.server_history.bytes,
-                    );
-
-                    debug!(
-                        "Running filter {} for flow {}",
-                        filter_history_name, flow.id
-                    );
-                    Ok(func.call1(args)?.extract()?)
-                } else {
-                    let filter_name = intern!(py, "server_filter");
-                    let func = module.getattr(filter_name)?;
-                    let args = (flow.id, PyBytes::new(py, flow.server_history.last_chunk()));
-
-                    debug!("Running filter {} for flow {}", filter_name, flow.id);
-                    Ok(func.call1(args)?.extract()?)
-                }
-            });
-
-        self.apply_result(result, &mut flow.server_history)
-    }
-
-    pub async fn on_flow_start(&self, _flow: &mut RawFlow) {}
-
-    pub async fn on_flow_close(&self, _flow: &mut RawFlow) {}
 
     pub async fn spawn_watcher(self: Arc<Self>) -> anyhow::Result<()> {
         let inotify = Inotify::init().context("Failed to initialize inotify")?;
@@ -262,7 +305,7 @@ impl Filter {
                      }, if recent => {
                          match Self::load_module(&filter.script_path) {
                              Ok(module) => {
-                                 let mut guard = filter.module.write().await;
+                                 let mut guard = filter.inner.write().await;
                                  *guard = module;
                                  info!("Reloaded python filter script");
                              }

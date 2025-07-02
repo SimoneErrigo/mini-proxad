@@ -115,7 +115,7 @@ impl Proxy {
             let dumper = self.inner.dumper.clone();
 
             if let Some(http) = self.inner.service.http_config.clone() {
-                let flow = HttpFlow::new(
+                let mut flow = HttpFlow::new(
                     client_addr,
                     self.inner.service.client_max_history,
                     self.inner.service.server_addr,
@@ -131,6 +131,12 @@ impl Proxy {
                             Ok(_) => debug!("Upstream HTTP connection closed"),
                             Err(e) => warn!("Upstream HTTP connection error: {:?}", e),
                         }
+                    });
+
+                    run_filter!(proxy, on_http_open, &mut flow, {
+                        info!("Python client filter killed flow {}", flow.id);
+                        upstream.abort();
+                        continue;
                     });
 
                     let service = ProxyHyper::new(proxy, sender, http.max_body, flow);
@@ -150,7 +156,11 @@ impl Proxy {
                         };
 
                         upstream.abort();
-                        if let Some(flow) = clone.into_flow() {
+                        let proxy = clone.proxy.clone();
+
+                        if let Some(mut flow) = clone.into_flow() {
+                            run_filter!(proxy, on_http_close, &mut flow, {});
+
                             if let Some(ref channel) = dumper {
                                 if let Err(e) = channel.try_send(Flow::Http(flow)) {
                                     warn!("Could not send flow to dumper: {}", e);
@@ -202,7 +212,10 @@ impl Proxy {
         let client_timeout = self.inner.service.client_timeout;
         let server_timeout = self.inner.service.server_timeout;
 
-        //run_filter!(filter, on_flow_start, flow, {});
+        run_filter!(self, on_raw_open, flow, {
+            info!("Python client filter killed flow {}", flow.id);
+            return Ok(());
+        });
 
         loop {
             select! {
@@ -215,7 +228,7 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.client_history.last_chunk())
                             );
 
-                            run_filter!(self, on_client_chunk, flow, {
+                            run_filter!(self, on_raw_client, flow, {
                                 info!("Python client filter killed flow {}", flow.id);
                                 break;
                             });
@@ -251,7 +264,7 @@ impl Proxy {
                                 String::from_utf8_lossy(flow.server_history.last_chunk())
                             );
 
-                            run_filter!(self, on_server_chunk, flow, {
+                            run_filter!(self, on_raw_server, flow, {
                                 info!("Python server filter killed flow {}", flow.id);
                                 break;
                             });
@@ -277,11 +290,10 @@ impl Proxy {
                         }
                     }
                 }
-                //else => warn!("WTF")
             }
         }
 
-        //run_filter!(filter, on_flow_close, flow, {});
+        run_filter!(self, on_raw_close, flow, {});
 
         client.flush().await?;
         server.flush().await?;

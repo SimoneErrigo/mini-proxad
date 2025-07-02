@@ -1,7 +1,5 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use std::borrow::Cow;
-use std::collections::HashMap;
 
 #[pyclass(module = "proxad", name = "HttpMessage", subclass, get_all, set_all)]
 pub struct PyHttpMessage {

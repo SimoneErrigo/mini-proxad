@@ -17,6 +17,12 @@ use crate::http::{BytesBody, HttpMessage};
 use crate::proxy::Proxy;
 use crate::run_filter;
 
+const RESPONSE_TOO_BIG: &str = "Response body too big";
+const REQUEST_TOO_BIG: &str = "Response body too big";
+const FILTER_KILLED: &str = "Killed by filter";
+const FILTER_INVALID: &str = "Invalid filter output";
+const SERVER_TIMEOUT: &str = "Server timeout elapsed";
+
 struct ProxyHyperInner {
     sender: SendRequest<BytesBody>,
     flow: HttpFlow,
@@ -111,9 +117,6 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
-        const RESPONSE_TOO_BIG: &str = "Response body too big";
-        const REQUEST_TOO_BIG: &str = "Response body too big";
-
         let service = self.clone();
         Box::pin(async move {
             if let Some(error) = service.inner.lock().await.error.take() {
@@ -149,7 +152,15 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
 
             // Send the request to the real service
             let req = Request::from_parts(parts, Self::full(body));
-            let resp = service.inner.lock().await.sender.send_request(req).await?;
+            let resp = {
+                let timeout = service.proxy.inner.service.server_timeout;
+                let mut guard = service.inner.lock().await;
+                match time::timeout(timeout, guard.sender.send_request(req)).await {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(e)) => Err(e)?,
+                    Err(_) => anyhow::bail!(SERVER_TIMEOUT),
+                }
+            };
 
             // Make a copy of the response
             let (parts, incoming) = resp.into_parts();
@@ -167,19 +178,13 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
 
             let body_len = body.len();
             let history_resp = Response::from_parts(parts, body);
-
-            let timeout = service.proxy.inner.service.server_timeout;
-            match time::timeout(timeout, service.push_response(history_resp, body_len)).await {
-                Ok(Ok(resp)) => resp,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => anyhow::bail!("Server timeout elapsed"),
-            };
+            service.push_response(history_resp, body_len).await?;
 
             let resp = {
                 let mut guard = service.inner.lock().await;
                 run_filter!(service.proxy, on_response, &mut guard.flow, {
                     info!("Python server filter killed flow {}", guard.flow.get_id());
-                    return Err(anyhow::anyhow!("Killed"));
+                    anyhow::bail!(FILTER_KILLED)
                 });
 
                 match guard.flow.history.messages.last() {
@@ -192,7 +197,7 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
                             "Python filter did not return a HTTP response for flow {}",
                             guard.flow.get_id()
                         );
-                        return Err(anyhow::anyhow!("Invalid filter"));
+                        anyhow::bail!(FILTER_INVALID)
                     }
                 }
             };
