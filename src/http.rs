@@ -15,6 +15,9 @@ pub type ServerBuilder = hyper::server::conn::http1::Builder;
 
 #[derive(Debug, Clone)]
 pub struct HttpConfig {
+    pub keep_alive: bool,
+    pub half_close: bool,
+    pub date_header: bool,
     pub max_body: u64,
     pub client_timeout: Duration,
     pub server_timeout: Duration,
@@ -23,6 +26,9 @@ pub struct HttpConfig {
 impl HttpConfig {
     pub fn new(config: &Config) -> anyhow::Result<HttpConfig> {
         Ok(HttpConfig {
+            keep_alive: config.http_keep_alive,
+            half_close: config.http_half_close,
+            date_header: config.http_date_header,
             max_body: config.http_max_body.as_u64(),
             client_timeout: config.client_timeout,
             server_timeout: config.server_timeout,
@@ -32,8 +38,10 @@ impl HttpConfig {
     pub fn server_builder(&self) -> ServerBuilder {
         let mut builder = ServerBuilder::new();
         builder.preserve_header_case(true);
-        builder.half_close(true);
-        builder.auto_date_header(false);
+        builder.half_close(self.half_close);
+        builder.keep_alive(self.keep_alive);
+        builder.auto_date_header(self.date_header);
+
         builder.timer(TokioTimer::new());
         builder.header_read_timeout(self.client_timeout);
         builder

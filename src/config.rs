@@ -71,6 +71,15 @@ pub struct Config {
     #[serde(default)]
     pub http_enabled: bool,
 
+    #[serde(default)]
+    pub http_keep_alive: bool,
+
+    #[serde(default)]
+    pub http_half_close: bool,
+
+    #[serde(default)]
+    pub http_date_header: bool,
+
     #[serde(default = "default_max_body")]
     pub http_max_body: Byte,
 }
