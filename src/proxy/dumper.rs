@@ -1,5 +1,4 @@
 use anyhow::Context;
-use anyhow::anyhow;
 use chrono::DateTime;
 use chrono::Utc;
 use etherparse::PacketBuilder;
@@ -17,9 +16,7 @@ use tokio::time::Instant;
 use tracing::trace;
 use tracing::{debug, error, info, warn};
 
-use crate::flow::Flow;
-use crate::flow::IsFlow;
-use crate::flow::RawFlow;
+use crate::flow::{Flow, IsFlow};
 use crate::{config::Config, service::Service};
 
 const DUMP_CHANNEL_LIMIT: usize = 400;
@@ -289,59 +286,6 @@ impl Dumper {
 
         Ok(n_packets)
     }
-
-    //fn write_tcp_raw(flow: &RawFlow) -> anyhow::Result<()> {
-    //    // TODO: Coalesce consecutive chunks coming from the same source
-    //    for (addr, chunk) in flow.into_iter() {
-    //        timestamp = Duration::new(
-    //            chunk.timestamp.timestamp() as u64,
-    //            chunk.timestamp.timestamp_subsec_nanos(),
-    //        );
-
-    //        let bytes = if addr == flow.client_addr {
-    //            last_was_client = true;
-    //            &flow.client_history.bytes[chunk.range.clone()]
-    //        } else {
-    //            last_was_client = false;
-    //            &flow.server_history.bytes[chunk.range.clone()]
-    //        };
-
-    //        let mut offset = 0;
-    //        while offset < bytes.len() {
-    //            let end = (offset + max_payload).min(bytes.len());
-    //            let bytes = &bytes[offset..end];
-    //            offset = end;
-
-    //            let (seq, ack, src, dst, sport, dport) = if addr == flow.get_client_addr() {
-    //                (seq_client, ack_client, src_ip, dst_ip, src_port, dst_port)
-    //            } else {
-    //                (seq_server, ack_server, dst_ip, src_ip, dst_port, src_port)
-    //            };
-
-    //            let mut flags = 0x10; // ACK
-    //            if end == bytes.len() {
-    //                flags |= 0x08; // PSH
-    //            }
-
-    //            Self::write_tcp_packet(
-    //                writer, timestamp, src, dst, sport, dport, seq, ack, flags, bytes,
-    //            )?;
-
-    //            n_packets += 1;
-
-    //            // Update seq/ack numbers per side
-    //            if addr == flow.client_addr {
-    //                seq_client = seq_client.wrapping_add(bytes.len() as u32);
-    //                ack_server = seq_client;
-    //            } else {
-    //                seq_server = seq_server.wrapping_add(bytes.len() as u32);
-    //                ack_client = seq_server;
-    //            }
-    //        }
-    //    }
-
-    //    Ok(())
-    //}
 
     fn write_tcp_handshake(
         writer: &mut PcapWriter<&mut File>,

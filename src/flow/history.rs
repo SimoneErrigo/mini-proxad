@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use hyper::{Request, Response};
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 use crate::http::{HttpMessage, HttpRequest, HttpResponse};
 

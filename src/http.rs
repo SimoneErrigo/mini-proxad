@@ -3,15 +3,14 @@ use chrono::{DateTime, Utc};
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
-use hyper::{Request, Response, service::HttpService};
+use hyper::{Request, Response};
 use hyper_util::rt::TokioTimer;
 use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods};
 use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use std::{io::Write, time::Duration};
-use tracing::trace;
 
+use crate::config::Config;
 use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
-use crate::{config::Config, proxy::ProxyStream};
 
 pub type BytesBody = BoxBody<Bytes, hyper::Error>;
 

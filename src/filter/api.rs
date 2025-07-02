@@ -1,5 +1,23 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use uuid::Uuid;
+
+#[pyclass(module = "proxad", name = "Flow", subclass, get_all)]
+pub struct PyFlow {
+    pub id: Uuid,
+}
+
+#[pymethods]
+impl PyFlow {
+    #[new]
+    pub fn new(id: Uuid) -> Self {
+        PyFlow { id }
+    }
+
+    fn __str__(&self) -> String {
+        format!("Flow(id={})", self.id)
+    }
+}
 
 #[pyclass(module = "proxad", name = "HttpMessage", subclass, get_all, set_all)]
 pub struct PyHttpMessage {
@@ -90,5 +108,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHttpRequest>()?;
     m.add_class::<PyHttpResponse>()?;
     m.add_class::<PyHttpMessage>()?;
+    m.add_class::<PyFlow>()?;
     Ok(())
 }

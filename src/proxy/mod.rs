@@ -156,11 +156,7 @@ impl Proxy {
                         };
 
                         upstream.abort();
-                        let proxy = clone.proxy.clone();
-
-                        if let Some(mut flow) = clone.into_flow() {
-                            run_filter!(proxy, on_http_close, &mut flow, {});
-
+                        if let Some(flow) = clone.into_flow() {
                             if let Some(ref channel) = dumper {
                                 if let Err(e) = channel.try_send(Flow::Http(flow)) {
                                     warn!("Could not send flow to dumper: {}", e);
@@ -292,8 +288,6 @@ impl Proxy {
                 }
             }
         }
-
-        run_filter!(self, on_raw_close, flow, {});
 
         client.flush().await?;
         server.flush().await?;
