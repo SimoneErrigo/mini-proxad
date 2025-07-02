@@ -67,6 +67,11 @@ pub struct Config {
 
     #[serde(default = "default_max_packets")]
     pub dump_max_packets: usize,
+
+    pub http_enabled: bool,
+
+    #[serde(default = "default_max_body")]
+    pub http_max_body: Byte,
 }
 
 fn default_timeout() -> Duration {
@@ -75,6 +80,10 @@ fn default_timeout() -> Duration {
 
 fn default_max_history() -> Byte {
     Byte::from_u64_with_unit(512, Unit::MiB).unwrap()
+}
+
+fn default_max_body() -> Byte {
+    Byte::from_u64_with_unit(8, Unit::MiB).unwrap()
 }
 
 fn default_max_packets() -> usize {

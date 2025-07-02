@@ -1,24 +1,76 @@
-use std::{net::SocketAddr, ops::Range};
 use chrono::{DateTime, Utc};
+use hyper::{Request, Response};
+use std::{net::SocketAddr, ops::Range};
 use uuid::Uuid;
+
+use crate::http::BytesBody;
+
+pub enum HttpMessage {
+    Response(Response<BytesBody>),
+    Request(Request<BytesBody>),
+}
+
+pub struct HttpHistory {
+    messages: Vec<HttpMessage>,
+}
+
+impl HttpHistory {
+    pub fn new() -> Self {
+        HttpHistory { messages: vec![] }
+    }
+}
+
+// FIXME
+pub type History = RawHistory;
+
+//pub enum Flow {
+//    Raw(RawFlow),
+//    Http(HttpFlow),
+//}
+//
+//pub struct RawFlow {
+//    pub id: Uuid,
+//    pub client_addr: SocketAddr,
+//    pub server_addr: SocketAddr,
+//    pub client_history: RawHistory,
+//    pub server_history: RawHistory,
+//}
+//
+//pub struct RawHistory {
+//    pub bytes: Vec<u8>,
+//    pub chunks: Vec<RawChunk>,
+//    pub max_size: usize,
+//}
+//
+//pub struct HttpFlow {
+//    pub id: Uuid,
+//    pub client_addr: SocketAddr,
+//    pub server_addr: SocketAddr,
+//}
+//
+//#[derive(Clone)]
+//pub struct RawChunk {
+//    pub range: Range<usize>,
+//    pub timestamp: DateTime<Utc>,
+//}
 
 pub struct Flow {
     pub id: Uuid,
     pub client_addr: SocketAddr,
     pub server_addr: SocketAddr,
-    pub client_history: History,
-    pub server_history: History,
+    pub client_history: RawHistory,
+    pub server_history: RawHistory,
 }
 
 #[derive(Clone)]
-pub struct HistoryChunk {
+pub struct RawChunk {
     pub range: Range<usize>,
     pub timestamp: DateTime<Utc>,
 }
 
-pub struct History {
+pub struct RawHistory {
     pub bytes: Vec<u8>,
-    pub chunks: Vec<HistoryChunk>,
+    pub chunks: Vec<RawChunk>,
     pub max_size: usize,
 }
 
@@ -33,15 +85,15 @@ impl Flow {
             id: Uuid::new_v4(),
             client_addr,
             server_addr,
-            client_history: History::new(client_max_history),
-            server_history: History::new(server_max_history),
+            client_history: RawHistory::new(client_max_history),
+            server_history: RawHistory::new(server_max_history),
         }
     }
 }
 
-impl History {
-    pub fn new(max_size: usize) -> History {
-        History {
+impl RawHistory {
+    pub fn new(max_size: usize) -> RawHistory {
+        RawHistory {
             bytes: vec![],
             chunks: vec![],
             max_size,
@@ -59,19 +111,19 @@ impl History {
 
     pub fn set_last_chunk(&mut self, bytes: &[u8]) {
         match self.chunks.pop() {
-            Some(HistoryChunk { range, timestamp }) => {
+            Some(RawChunk { range, timestamp }) => {
                 let start = range.start;
                 self.bytes.truncate(start);
 
                 self.bytes.extend_from_slice(bytes);
-                self.chunks.push(HistoryChunk {
+                self.chunks.push(RawChunk {
                     range: start..start + bytes.len(),
                     timestamp,
                 });
             }
             None => {
                 self.bytes.extend_from_slice(bytes);
-                self.chunks.push(HistoryChunk {
+                self.chunks.push(RawChunk {
                     range: 0..bytes.len(),
                     timestamp: Utc::now(),
                 });
@@ -81,7 +133,7 @@ impl History {
 }
 
 impl<'a> IntoIterator for &'a Flow {
-    type Item = (SocketAddr, HistoryChunk);
+    type Item = (SocketAddr, RawChunk);
     type IntoIter = FlowIterator<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -100,7 +152,7 @@ pub struct FlowIterator<'a> {
 }
 
 impl<'a> Iterator for FlowIterator<'a> {
-    type Item = (SocketAddr, HistoryChunk);
+    type Item = (SocketAddr, RawChunk);
     fn next(&mut self) -> Option<Self::Item> {
         let client_chunk = self.flow.client_history.chunks.get(self.client_index);
         let server_chunk = self.flow.server_history.chunks.get(self.server_index);

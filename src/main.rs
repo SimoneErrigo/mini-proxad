@@ -1,5 +1,6 @@
 mod config;
 mod flow;
+mod http;
 mod proxy;
 mod service;
 mod stream;
@@ -99,14 +100,14 @@ async fn main() {
     }
 
     match rlimit::increase_nofile_limit(u64::MAX) {
-        Ok(lim) => info!("Raised nofile limits to {}", lim),
-        Err(e) => warn!("Failed to raise nofile limits: {}", e),
+        Ok(lim) => info!(soft = lim, "Raised NOFILE limits"),
+        Err(e) => warn!("Failed to raise NOFILE limits: {}", e),
     }
 
     let task = match Proxy::start(service, &config).await {
         Ok(task) => {
             info!(
-                "Started Proxad {}:{} -> {}:{}",
+                "Started Proxad on {}:{} -> {}:{}",
                 &config.client_ip, &config.client_port, &config.server_ip, &config.server_port
             );
             task

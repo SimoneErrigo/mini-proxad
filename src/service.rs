@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::http::HttpConfig;
 use crate::proxy::Filter;
 use crate::tls::TlsConfig;
 
@@ -17,6 +18,7 @@ pub struct Service {
     pub client_max_history: usize,
     pub server_max_history: usize,
     pub tls_config: Option<TlsConfig>,
+    pub http_config: Option<HttpConfig>,
     pub filter: Option<Arc<Filter>>,
 }
 
@@ -40,6 +42,11 @@ impl Service {
             })
             .transpose()?;
 
+        let http_config = config
+            .http_enabled
+            .then(|| HttpConfig::new(&config).context("Failed to load HTTP config"))
+            .transpose()?;
+
         Ok(Service {
             name: config.service_name.clone(),
             client_addr: SocketAddr::new(config.client_ip, config.client_port),
@@ -49,6 +56,7 @@ impl Service {
             client_max_history: config.client_max_history.as_u64() as usize,
             server_max_history: config.server_max_history.as_u64() as usize,
             tls_config,
+            http_config,
             filter: None,
         })
     }
