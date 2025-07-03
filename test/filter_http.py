@@ -1,4 +1,4 @@
-from proxad import HttpFlow, HttpResp, HttpReq
+from proxad import HttpFlow, HttpResp, HttpReq, Uri
 
 
 # Gets executed on every request / response pair
@@ -24,3 +24,8 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 # Gets executed everytime a flow is opened
 # def http_open(flow):
 #    print(flow)
+
+import pydoc
+import proxad
+
+print(pydoc.render_doc(proxad))

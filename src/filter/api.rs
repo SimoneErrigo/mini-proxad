@@ -243,9 +243,8 @@ impl PyUri {
 
         let dict = PyDict::new(py);
         if let Some(query) = self.uri.query() {
-            let pairs = form_urlencoded::parse(query.as_bytes());
-
             // Make a dict[list[str]]
+            let pairs = form_urlencoded::parse(query.as_bytes());
             for (k, v) in pairs {
                 if let Some(prev) = dict.get_item(&k)? {
                     let list: &Bound<PyList> = prev.downcast()?;
@@ -276,5 +275,6 @@ pub fn register_proxad(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyHttpMessage>()?;
     module.add_class::<PyHttpResponse>()?;
     module.add_class::<PyHttpRequest>()?;
+    module.add_class::<PyUri>()?;
     Ok(())
 }
