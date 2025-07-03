@@ -1,5 +1,4 @@
 use http::Uri;
-use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use pyo3::{PyTraverseError, PyVisit, prelude::*};
 use uuid::Uuid;
@@ -74,13 +73,33 @@ impl PyHttpFlow {
     }
 }
 
+macro_rules! cached_getter {
+    ($self:ident, $py:ident, $which:ident, $cache:ident, $ctor:expr) => {
+        if let Some(ref v) = $self.$cache {
+            Ok(v.clone_ref($py))
+        } else if let Some(ref $which) = $self.$which {
+            let val = $ctor;
+            $self.$cache = Some(val.clone_ref($py));
+            Ok(val)
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Invalid Http object",
+            ))
+        }
+    };
+}
+
 #[pyclass(module = "proxad", name = "HttpResp", freelist = 64)]
 pub struct PyHttpResp {
     pub resp: Option<HttpResponse>,
-    pub headers: Option<Py<PyDict>>,
-    pub body: Option<Py<PyBytes>>,
-    pub status: Option<u16>,
     pub raw: Option<Py<PyBytes>>,
+
+    #[pyo3(set)]
+    pub headers: Option<Py<PyDict>>,
+    #[pyo3(set)]
+    pub body: Option<Py<PyBytes>>,
+    #[pyo3(set)]
+    pub status: Option<u16>,
 }
 
 #[pymethods]
@@ -89,10 +108,10 @@ impl PyHttpResp {
     pub fn py_new(headers: Py<PyDict>, body: Py<PyBytes>, status: u16) -> Self {
         PyHttpResp {
             resp: None,
+            raw: None,
             headers: Some(headers),
             body: Some(body),
             status: Some(status),
-            raw: None,
         }
     }
 
@@ -124,48 +143,27 @@ impl PyHttpResp {
 
     /// Returns the HTTP headers as a dict[str, str]
     #[getter]
-    fn headers(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        if let Some(ref headers) = self.headers {
-            return Ok(headers.clone_ref(py));
-        }
-
-        if let Some(ref resp) = self.resp {
+    fn get_headers(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        cached_getter!(self, py, resp, headers, {
             let headers = PyDict::new(py);
             for (name, value) in resp.0.headers().iter() {
                 headers.set_item(name.as_str(), value.to_str().unwrap())?;
             }
-
-            let headers: Py<PyDict> = headers.into();
-            self.headers = Some(headers.clone_ref(py));
-            Ok(headers)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpResp object",
-            ))
-        }
+            <Py<PyDict>>::from(headers)
+        })
     }
 
     /// Returns the body content as bytes
     #[getter]
-    fn body(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        if let Some(ref body) = self.body {
-            return Ok(body.clone_ref(py));
-        }
-
-        if let Some(ref resp) = self.resp {
-            let body: Py<PyBytes> = PyBytes::new(py, &resp.0.body()).into();
-            self.body = Some(body.clone_ref(py));
-            Ok(body)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpResp object",
-            ))
-        }
+    fn get_body(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        cached_getter!(self, py, resp, body, {
+            <Py<PyBytes>>::from(PyBytes::new(py, &resp.0.body()))
+        })
     }
 
     /// Returns the status code of this response
     #[getter]
-    fn status(&mut self) -> PyResult<u16> {
+    fn get_status(&mut self) -> PyResult<u16> {
         if let Some(status) = self.status {
             return Ok(status);
         }
@@ -183,20 +181,10 @@ impl PyHttpResp {
 
     /// Returns the raw response
     #[getter]
-    fn raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        if let Some(ref raw) = self.raw {
-            return Ok(raw.clone_ref(py));
-        }
-
-        if let Some(ref resp) = self.resp {
-            let raw: Py<PyBytes> = PyBytes::new(py, &resp.to_bytes()).into();
-            self.raw = Some(raw.clone_ref(py));
-            Ok(raw)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpResp object",
-            ))
-        }
+    fn get_raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        cached_getter!(self, py, resp, raw, {
+            <Py<PyBytes>>::from(PyBytes::new(py, &resp.to_bytes()))
+        })
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -217,10 +205,10 @@ impl PyHttpResp {
     pub fn new(resp: HttpResponse) -> Self {
         PyHttpResp {
             resp: Some(resp),
+            raw: None,
             headers: None,
             body: None,
             status: None,
-            raw: None,
         }
     }
 }
@@ -228,11 +216,16 @@ impl PyHttpResp {
 #[pyclass(module = "proxad", name = "HttpReq", freelist = 64)]
 pub struct PyHttpReq {
     pub req: Option<HttpRequest>,
-    pub headers: Option<Py<PyDict>>,
-    pub body: Option<Py<PyBytes>>,
-    pub method: Option<Py<PyString>>,
-    pub uri: Option<Py<PyUri>>,
     pub raw: Option<Py<PyBytes>>,
+
+    #[pyo3(set)]
+    pub headers: Option<Py<PyDict>>,
+    #[pyo3(set)]
+    pub body: Option<Py<PyBytes>>,
+    #[pyo3(set)]
+    pub method: Option<Py<PyString>>,
+    #[pyo3(set)]
+    pub uri: Option<Py<PyUri>>,
 }
 
 #[pymethods]
@@ -246,11 +239,11 @@ impl PyHttpReq {
     ) -> Self {
         PyHttpReq {
             req: None,
+            raw: None,
             headers: Some(headers),
             body: Some(body),
             method: Some(method),
             uri: Some(uri),
-            raw: None,
         }
     }
 
@@ -297,97 +290,46 @@ impl PyHttpReq {
 
     /// Returns the HTTP headers as a dict[str, str]
     #[getter]
-    fn headers(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        if let Some(ref headers) = self.headers {
-            return Ok(headers.clone_ref(py));
-        }
-
-        if let Some(ref req) = self.req {
+    fn get_headers(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        cached_getter!(self, py, req, headers, {
             let headers = PyDict::new(py);
             for (name, value) in req.0.headers().iter() {
                 headers.set_item(name.as_str(), value.to_str().unwrap())?;
             }
-
-            let headers: Py<PyDict> = headers.into();
-            self.headers = Some(headers.clone_ref(py));
-            Ok(headers)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpReq object",
-            ))
-        }
+            <Py<PyDict>>::from(headers)
+        })
     }
 
     /// Returns the body content as bytes
     #[getter]
-    fn body(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        if let Some(ref body) = self.body {
-            return Ok(body.clone_ref(py));
-        }
-
-        if let Some(ref req) = self.req {
-            let body: Py<PyBytes> = PyBytes::new(py, &req.0.body()).into();
-            self.body = Some(body.clone_ref(py));
-            Ok(body)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpReq object",
-            ))
-        }
+    fn get_body(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        cached_getter!(self, py, req, body, {
+            <Py<PyBytes>>::from(PyBytes::new(py, &req.0.body()))
+        })
     }
 
     /// Returns the method of this request
     #[getter]
-    fn method(&mut self, py: Python<'_>) -> PyResult<Py<PyString>> {
-        if let Some(ref method) = self.method {
-            return Ok(method.clone_ref(py));
-        }
-
-        if let Some(ref req) = self.req {
-            let method: Py<PyString> = PyString::new(py, req.0.method().as_str()).into();
-            self.method = Some(method.clone_ref(py));
-            Ok(method)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpReq object",
-            ))
-        }
+    fn get_method(&mut self, py: Python<'_>) -> PyResult<Py<PyString>> {
+        cached_getter!(self, py, req, method, {
+            <Py<PyString>>::from(PyString::new(py, req.0.method().as_str()))
+        })
     }
 
     /// Returns the uri of this request
     #[getter]
-    fn uri(&mut self, py: Python<'_>) -> PyResult<Py<PyUri>> {
-        if let Some(ref uri) = self.uri {
-            return Ok(uri.clone_ref(py));
-        }
-
-        if let Some(ref req) = self.req {
-            let uri: Py<PyUri> = Py::new(py, PyUri::new(req.0.uri().clone()))?;
-            self.uri = Some(uri.clone_ref(py));
-            Ok(uri)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpReq object",
-            ))
-        }
+    fn get_uri(&mut self, py: Python<'_>) -> PyResult<Py<PyUri>> {
+        cached_getter!(self, py, req, uri, {
+            <Py<PyUri>>::from(Py::new(py, PyUri::new(req.0.uri().clone()))?)
+        })
     }
 
     /// Returns the raw request
     #[getter]
-    fn raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        if let Some(ref raw) = self.raw {
-            return Ok(raw.clone_ref(py));
-        }
-
-        if let Some(ref req) = self.req {
-            let raw: Py<PyBytes> = PyBytes::new(py, &req.to_bytes()).into();
-            self.raw = Some(raw.clone_ref(py));
-            Ok(raw)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid HttpReq object",
-            ))
-        }
+    fn get_raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        cached_getter!(self, py, req, raw, {
+            <Py<PyBytes>>::from(PyBytes::new(py, &req.to_bytes()))
+        })
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -412,11 +354,11 @@ impl PyHttpReq {
     pub fn new(req: HttpRequest) -> Self {
         PyHttpReq {
             req: Some(req),
+            raw: None,
             headers: None,
             body: None,
             method: None,
             uri: None,
-            raw: None,
         }
     }
 }

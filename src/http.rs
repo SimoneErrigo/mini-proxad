@@ -1,15 +1,15 @@
 use bytes::Bytes;
-use http::Method;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
+use http::{HeaderName, HeaderValue, StatusCode};
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioTimer;
-use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyString, PyStringMethods};
+use pyo3::types::{PyAnyMethods, PyBytesMethods, PyDictMethods, PyStringMethods};
 use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use std::{io::Write, time::Duration};
 
 use crate::config::Config;
-use crate::filter::api::{PyHttpReq, PyHttpResp, PyUri};
+use crate::filter::api::{PyHttpReq, PyHttpResp};
 
 pub type BytesBody = BoxBody<Bytes, hyper::Error>;
 
@@ -136,43 +136,59 @@ impl<'py> FromPyObject<'py> for HttpResponse {
         let resp_bound: &Bound<'py, PyHttpResp> = ob.downcast()?;
         let mut resp = resp_bound.borrow_mut();
 
-        if let Some(inner) = resp.resp.take() {
-            return Ok(inner);
-        }
+        let inner = resp
+            .resp
+            .take()
+            .unwrap_or_else(|| HttpResponse(Response::default()));
 
-        let headers: &Bound<'py, PyDict> = resp
-            .headers
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing headers"))?
-            .bind(ob.py());
+        let (mut parts, old_body) = inner.0.into_parts();
 
-        let body: &[u8] = resp
-            .body
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing body"))?
-            .extract(ob.py())?;
+        if let Some(headers) = resp.headers.take() {
+            parts.headers.clear();
 
-        let status = resp
-            .status
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing status"))?;
+            for (k, v) in headers.bind(ob.py()).iter() {
+                let k: &str = k.extract()?;
+                if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
+                    || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
+                {
+                    continue;
+                }
 
-        let mut builder = Response::builder().status(status);
-        for (k, v) in headers.iter() {
-            let k: &str = k.extract()?;
-            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
-                || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
-            {
-                continue;
+                let hk = HeaderName::from_bytes(k.as_bytes()).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid header name {}: {}",
+                        k, e
+                    ))
+                })?;
+
+                let hv = HeaderValue::from_str(v.extract()?).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid header value for {}: {}",
+                        k, e
+                    ))
+                })?;
+
+                parts.headers.insert(hk, hv);
             }
-            let v: &str = v.extract()?;
-            builder = builder.header(k, v);
         }
 
-        Ok(HttpResponse(
-            builder
-                .body(Bytes::copy_from_slice(body))
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
-        ))
+        let body = if let Some(body) = resp.body.as_ref() {
+            let bound = body.bind(ob.py());
+            Bytes::copy_from_slice(&bound.as_bytes())
+        } else {
+            old_body
+        };
+
+        if let Some(status) = resp.status {
+            parts.status = StatusCode::from_u16(status).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Invalid status code: {}",
+                    e
+                ))
+            })?;
+        }
+
+        Ok(HttpResponse(Response::from_parts(parts, body)))
     }
 }
 
@@ -192,52 +208,61 @@ impl<'py> FromPyObject<'py> for HttpRequest {
         let req_bound: &Bound<'py, PyHttpReq> = ob.downcast()?;
         let mut req = req_bound.borrow_mut();
 
-        if let Some(inner) = req.req.take() {
-            return Ok(inner);
-        }
+        let inner = req
+            .req
+            .take()
+            .unwrap_or_else(|| HttpRequest(Request::default()));
 
-        let headers: &Bound<'py, PyDict> = req
-            .headers
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing headers"))?
-            .bind(ob.py());
+        let (mut parts, old_body) = inner.0.into_parts();
 
-        let body: &[u8] = req
-            .body
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing body"))?
-            .extract(ob.py())?;
+        if let Some(headers) = req.headers.take() {
+            parts.headers.clear();
 
-        let method: &Bound<'py, PyString> = req
-            .method
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing method"))?
-            .bind(ob.py());
+            for (k, v) in headers.bind(ob.py()).iter() {
+                let k: &str = k.extract()?;
+                if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
+                    || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
+                {
+                    continue;
+                }
 
-        let uri_obj = req
-            .uri
-            .as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing uri"))?
-            .bind(ob.py());
+                let hk = HeaderName::from_bytes(k.as_bytes()).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid header name {}: {}",
+                        k, e
+                    ))
+                })?;
 
-        let uri = uri_obj.borrow().uri.clone();
-        let mut builder = Request::builder().method(method.to_str()?).uri(uri);
+                let hv = HeaderValue::from_str(v.extract()?).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid header value for {}: {}",
+                        k, e
+                    ))
+                })?;
 
-        for (k, v) in headers.iter() {
-            let k: &str = k.extract()?;
-            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
-                || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
-            {
-                continue;
+                parts.headers.insert(hk, hv);
             }
-            let v: &str = v.extract()?;
-            builder = builder.header(k, v);
         }
 
-        Ok(HttpRequest(
-            builder
-                .body(Bytes::copy_from_slice(body))
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
-        ))
+        let body = if let Some(body) = req.body.as_ref() {
+            let bound = body.bind(ob.py());
+            Bytes::copy_from_slice(&bound.as_bytes())
+        } else {
+            old_body
+        };
+
+        if let Some(method) = req.method.as_ref() {
+            let bound = method.bind(ob.py()).to_str()?;
+            parts.method = bound.parse().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Bad method: {}", e))
+            })?;
+        }
+
+        if let Some(uri) = req.uri.as_ref() {
+            let bound = uri.bind(ob.py()).borrow();
+            parts.uri = bound.uri.clone();
+        }
+
+        Ok(HttpRequest(Request::from_parts(parts, body)))
     }
 }

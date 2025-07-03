@@ -153,7 +153,7 @@ def multiple_flags_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
 
 def regex_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
-    if any(re.search(pattern, req.body + req.uri.query.encode()) for pattern in ALL_REGEXES):
+    if any(re.search(pattern, req.raw) for pattern in ALL_REGEXES):
         if flow.session_id:
             logger.info(f"[🔍] Regex match found in session {flow.session_id}")
             ALL_SESSIONS[flow.session_id] = True
@@ -172,12 +172,9 @@ def block_response(resp):
 def replace_flag(resp):
     if BLOCK_ALL_EVIL:
         return block_response(resp)
-    new_resp = HttpResp(
-        headers=resp.headers.copy(),
-        status=resp.status,
-        body=re.sub(FLAG_REGEX, FLAG_REPLACEMENT.encode(), resp.body or b""),
-    )
-    return new_resp
+
+    resp.body = re.sub(FLAG_REGEX, FLAG_REPLACEMENT.encode(), resp.body or b"")
+    return resp
 
 
 def find_session_id(flow: HttpFlow, req: HttpReq, resp: HttpResp):
@@ -194,7 +191,13 @@ def find_session_id(flow: HttpFlow, req: HttpReq, resp: HttpResp):
             return session_id
 
 
+def myfilter(flow, req, resp):
+    resp.headers["ciao"] = "1"
+    return resp
+
+
 FILTERS = [
+    # myfilter,
     regex_filter,
     # method_filter,
     # params_filter,
@@ -215,7 +218,7 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
     for f in FILTERS:
         result = f(flow, req, resp)
-        if result == ...:
+        if result is ...:
             return result
         if result:
             resp = result
@@ -223,5 +226,5 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
 
 # Gets executed everytime a flow is opened
-def http_open(flow: HttpFlow):
-    pass
+# def http_open(flow: HttpFlow):
+#    pass
