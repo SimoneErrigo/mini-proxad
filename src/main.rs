@@ -116,7 +116,7 @@ async fn main() {
     let task = match Proxy::start(service, &config).await {
         Ok(task) => {
             info!(
-                "Started Proxad on {}:{} -> {}:{}",
+                "Started proxying {}:{} -> {}:{}",
                 &config.client_ip, &config.client_port, &config.server_ip, &config.server_port
             );
             task

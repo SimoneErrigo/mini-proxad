@@ -86,6 +86,11 @@ impl Dumper {
         };
 
         tokio::task::spawn_blocking(move || {
+            info!(
+                path = %dumper.path.to_string_lossy(),
+                interval = dumper.interval.as_secs(),
+                "Started dumper task"
+            );
             if let Err(e) = dumper.dumper() {
                 error!("Dumper crashed: {:?}", e);
             }
