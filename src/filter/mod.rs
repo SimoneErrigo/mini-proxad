@@ -5,7 +5,7 @@ use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
 use pyo3::ffi::c_str;
-use pyo3::types::{PyBytes, PyDict, PyEllipsis, PyModule, PyString};
+use pyo3::types::{PyBytes, PyDict, PyEllipsis, PyList, PyModule, PyString};
 use pyo3::{IntoPyObjectExt, intern, prelude::*};
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -51,15 +51,24 @@ impl Filter {
     pub fn load_api() -> anyhow::Result<()> {
         Python::with_gil(|py| {
             let module = PyModule::new(py, "proxad")?;
-            api::register(&module)?;
+            api::register_proxad(&module)?;
 
-            let sys = PyModule::import(py, "sys").unwrap();
-            let py_modules: Bound<'_, PyDict> =
-                sys.getattr("modules").unwrap().downcast_into().unwrap();
+            let child = PyModule::new(py, "http")?;
+            api::register_proxad_http(&child)?;
+            module.add_submodule(&child)?;
 
-            py_modules
-                .set_item("proxad", module)
-                .context("Failed to import proxad module")
+            let path_list = PyList::new(py, &[""])?;
+            module.setattr("__path__", path_list)?;
+
+            let sys_modules: Bound<PyDict> = PyModule::import(py, "sys")?
+                .getattr("modules")?
+                .downcast_into()
+                .expect("Python exploded :(");
+
+            sys_modules.set_item("proxad", module)?;
+            sys_modules.set_item("proxad.http", child)?;
+
+            Ok(())
         })
     }
 

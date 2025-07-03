@@ -1,14 +1,10 @@
-use std::sync::Arc;
-
 use pyo3::types::{PyBytes, PyDict};
 use pyo3::{PyTraverseError, PyVisit, prelude::*};
 use uuid::Uuid;
 
-use crate::flow::history::RawHistory;
-
 // TODO: Add a way to convert lazily into python object
 
-#[pyclass(module = "proxad", name = "RawFlow", frozen)]
+#[pyclass(name = "RawFlow", frozen)]
 pub struct PyRawFlow {
     #[pyo3(get)]
     id: Uuid,
@@ -43,6 +39,12 @@ impl PyRawFlow {
             server_history: Some(PyBytes::new(py, server_history).into()),
         })
     }
+
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        visit.call(&self.client_history)?;
+        visit.call(&self.server_history)?;
+        Ok(())
+    }
 }
 
 #[pyclass(module = "proxad", name = "HttpFlow", frozen)]
@@ -62,7 +64,7 @@ impl PyHttpFlow {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpMessage", subclass, get_all, set_all)]
+#[pyclass(module = "proxad.http", name = "Message", subclass, get_all, set_all)]
 pub struct PyHttpMessage {
     pub headers: Py<PyDict>,
     pub body: Py<PyBytes>,
@@ -92,7 +94,7 @@ impl PyHttpMessage {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpResponse", extends = PyHttpMessage)]
+#[pyclass(module = "proxad.http", name = "Response", extends = PyHttpMessage)]
 pub struct PyHttpResponse {
     #[pyo3(get, set)]
     pub status: u16,
@@ -118,7 +120,7 @@ impl PyHttpResponse {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpRequest", extends = PyHttpMessage)]
+#[pyclass(module = "proxad.http", name = "Request", extends = PyHttpMessage)]
 pub struct PyHttpRequest {
     #[pyo3(get, set)]
     pub method: String,
@@ -158,11 +160,18 @@ impl PyHttpRequest {
     }
 }
 
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyRawFlow>()?;
-    m.add_class::<PyHttpFlow>()?;
-    m.add_class::<PyHttpMessage>()?;
-    m.add_class::<PyHttpResponse>()?;
-    m.add_class::<PyHttpRequest>()?;
+pub fn register_proxad(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyRawFlow>()?;
+    module.add_class::<PyHttpFlow>()?;
+    module.add_class::<PyHttpMessage>()?;
+    module.add_class::<PyHttpResponse>()?;
+    module.add_class::<PyHttpRequest>()?;
+    Ok(())
+}
+
+pub fn register_proxad_http(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyHttpMessage>()?;
+    module.add_class::<PyHttpResponse>()?;
+    module.add_class::<PyHttpRequest>()?;
     Ok(())
 }
