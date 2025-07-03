@@ -19,6 +19,9 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
     #    body = resp.body.replace(b"FLAG", b"skibidi")
     #    return HttpResp(resp.headers, body, resp.status)
 
+    if b"FLAG" in req.raw:
+        print("FLAGGED")
+
     return HttpResp(
         headers=resp.headers,
         body=resp.body.replace(b"CCalendar", b"skibidi"),

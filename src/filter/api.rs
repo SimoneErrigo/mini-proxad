@@ -181,6 +181,24 @@ impl PyHttpResp {
         }
     }
 
+    /// Returns the raw response
+    #[getter]
+    fn raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        if let Some(ref raw) = self.raw {
+            return Ok(raw.clone_ref(py));
+        }
+
+        if let Some(ref resp) = self.resp {
+            let raw: Py<PyBytes> = PyBytes::new(py, &resp.to_bytes()).into();
+            self.raw = Some(raw.clone_ref(py));
+            Ok(raw)
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Invalid HttpResp object",
+            ))
+        }
+    }
+
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.headers)?;
         visit.call(&self.body)?;
@@ -320,8 +338,7 @@ impl PyHttpReq {
 
     /// Returns the method of this request
     #[getter]
-    #[pyo3(name = "method")]
-    fn method_(&mut self, py: Python<'_>) -> PyResult<Py<PyString>> {
+    fn method(&mut self, py: Python<'_>) -> PyResult<Py<PyString>> {
         if let Some(ref method) = self.method {
             return Ok(method.clone_ref(py));
         }
@@ -348,6 +365,24 @@ impl PyHttpReq {
             let uri: Py<PyUri> = Py::new(py, PyUri::new(req.0.uri().clone()))?;
             self.uri = Some(uri.clone_ref(py));
             Ok(uri)
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Invalid HttpReq object",
+            ))
+        }
+    }
+
+    /// Returns the raw request
+    #[getter]
+    fn raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        if let Some(ref raw) = self.raw {
+            return Ok(raw.clone_ref(py));
+        }
+
+        if let Some(ref req) = self.req {
+            let raw: Py<PyBytes> = PyBytes::new(py, &req.to_bytes()).into();
+            self.raw = Some(raw.clone_ref(py));
+            Ok(raw)
         } else {
             Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "Invalid HttpReq object",
