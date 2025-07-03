@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use http::Uri;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::{PyTraverseError, PyVisit, prelude::*};
-use url::form_urlencoded;
 use uuid::Uuid;
 
 // TODO: Add a way to convert lazily into python object
