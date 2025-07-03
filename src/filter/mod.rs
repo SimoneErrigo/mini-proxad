@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::filter::api::{PyHttpFlow, PyHttpResponse, PyRawFlow};
+use crate::filter::api::{PyHttpFlow, PyHttpResp, PyRawFlow};
 use crate::flow::history::RawHistory;
 use crate::flow::{HttpFlow, RawFlow};
 use crate::http::HttpResponse;
@@ -106,7 +106,7 @@ impl Filter {
 
     pub async fn on_http_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.http_filter {
-            let result: anyhow::Result<Either<Option<Py<PyHttpResponse>>, Py<PyEllipsis>>> =
+            let result: anyhow::Result<Either<Option<Py<PyHttpResp>>, Py<PyEllipsis>>> =
                 Python::with_gil(|py| {
                     let req = flow
                         .history

@@ -5,7 +5,7 @@ from aiohttp import ClientSession, TCPConnector
 
 URL = "https://localhost:9443"
 CA_FILE = "./test/keys/ca-cert.pem"
-CONCURRENCY = 200
+CONCURRENCY = 400
 REQUESTS = 1000
 TICK_INTERVAL = 3
 

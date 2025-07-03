@@ -4,12 +4,12 @@ use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioTimer;
-use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods};
+use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyString, PyStringMethods};
 use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use std::{io::Write, time::Duration};
 
 use crate::config::Config;
-use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse, PyUri};
+use crate::filter::api::{PyHttpReq, PyHttpResp, PyUri};
 
 pub type BytesBody = BoxBody<Bytes, hyper::Error>;
 
@@ -121,102 +121,40 @@ fn version_to_bytes(ver: http::Version) -> &'static str {
 }
 
 impl<'py> IntoPyObject<'py> for HttpResponse {
-    type Target = PyHttpResponse;
+    type Target = PyHttpResp;
     type Output = Bound<'py, Self::Target>;
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let (parts, body) = self.0.into_parts();
-
-        let headers = PyDict::new(py);
-        for (name, value) in parts.headers.iter() {
-            headers.set_item(name.as_str(), value.to_str().unwrap())?;
-        }
-
-        let body = PyBytes::new(py, &body).into();
-        let status = parts.status.as_u16();
-
-        let resp: Py<PyHttpResponse> = Py::new(
-            py,
-            PyHttpResponse::new(headers.clone().into(), body, status),
-        )?;
-
+        let resp: Py<PyHttpResp> = Py::new(py, PyHttpResp::new(self))?;
         Ok(resp.into_bound(py))
-    }
-}
-
-impl<'py> IntoPyObject<'py> for HttpRequest {
-    type Target = PyHttpRequest;
-    type Output = Bound<'py, Self::Target>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let (parts, body) = self.0.into_parts();
-
-        let headers = PyDict::new(py);
-        for (name, value) in parts.headers.iter() {
-            headers.set_item(name.as_str(), value.to_str().unwrap())?;
-        }
-
-        let body = PyBytes::new(py, &body).into();
-        let method = parts.method.to_string();
-        let uri = Py::new(py, PyUri::py_new(parts.uri.to_string())?)?;
-
-        let req: Py<PyHttpRequest> = Py::new(
-            py,
-            PyHttpRequest::new(headers.clone().into(), body, method, uri),
-        )?;
-
-        Ok(req.into_bound(py))
-    }
-}
-
-impl<'py> FromPyObject<'py> for HttpRequest {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let req_bound: &Bound<'py, PyHttpRequest> = ob.downcast()?;
-        let req = req_bound.borrow();
-
-        let method = req.method.as_str();
-        let uri_bound = req.uri.bind(ob.py()).downcast::<PyUri>()?.borrow();
-        let uri = &uri_bound.uri;
-
-        let msg_bound: &Bound<'py, PyHttpMessage> = req_bound.as_super();
-        let msg = msg_bound.borrow();
-
-        let headers: &Bound<'py, PyDict> = msg.headers.bind(ob.py());
-        let body: &[u8] = msg.body.as_ref().extract(ob.py())?;
-
-        let mut builder = Request::builder()
-            .method(method.parse::<Method>().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Bad HTTP method: {}", e))
-            })?)
-            .uri(uri);
-
-        for (k, v) in headers.iter() {
-            let k: &str = k.extract()?;
-            let v: &str = v.extract()?;
-            builder = builder.header(k, v);
-        }
-
-        Ok(HttpRequest(
-            builder
-                .body(Bytes::copy_from_slice(body))
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
-        ))
     }
 }
 
 impl<'py> FromPyObject<'py> for HttpResponse {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let resp_bound: &Bound<'py, PyHttpResponse> = ob.downcast()?;
-        let resp = resp_bound.borrow();
+        let resp_bound: &Bound<'py, PyHttpResp> = ob.downcast()?;
+        let mut resp = resp_bound.borrow_mut();
 
-        let status = resp.status;
-        let msg_bound: &Bound<'py, PyHttpMessage> = resp_bound.as_super();
-        let msg = msg_bound.borrow();
+        if let Some(inner) = resp.resp.take() {
+            return Ok(inner);
+        }
 
-        let headers: &Bound<'py, PyDict> = msg.headers.bind(ob.py());
-        let body: &[u8] = msg.body.as_ref().extract(ob.py())?;
+        let headers: &Bound<'py, PyDict> = resp
+            .headers
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing headers"))?
+            .bind(ob.py());
+
+        let body: &[u8] = resp
+            .body
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing body"))?
+            .extract(ob.py())?;
+
+        let status = resp
+            .status
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing status"))?;
 
         let mut builder = Response::builder().status(status);
         for (k, v) in headers.iter() {
@@ -231,6 +169,72 @@ impl<'py> FromPyObject<'py> for HttpResponse {
         }
 
         Ok(HttpResponse(
+            builder
+                .body(Bytes::copy_from_slice(body))
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
+        ))
+    }
+}
+
+impl<'py> IntoPyObject<'py> for HttpRequest {
+    type Target = PyHttpReq;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let req: Py<PyHttpReq> = Py::new(py, PyHttpReq::new(self))?;
+        Ok(req.into_bound(py))
+    }
+}
+
+impl<'py> FromPyObject<'py> for HttpRequest {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let req_bound: &Bound<'py, PyHttpReq> = ob.downcast()?;
+        let mut req = req_bound.borrow_mut();
+
+        if let Some(inner) = req.req.take() {
+            return Ok(inner);
+        }
+
+        let headers: &Bound<'py, PyDict> = req
+            .headers
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing headers"))?
+            .bind(ob.py());
+
+        let body: &[u8] = req
+            .body
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing body"))?
+            .extract(ob.py())?;
+
+        let method: &Bound<'py, PyString> = req
+            .method
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing method"))?
+            .bind(ob.py());
+
+        let uri_obj = req
+            .uri
+            .as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Missing uri"))?
+            .bind(ob.py());
+
+        let uri = uri_obj.borrow().uri.clone();
+        let mut builder = Request::builder().method(method.to_str()?).uri(uri);
+
+        for (k, v) in headers.iter() {
+            let k: &str = k.extract()?;
+            if k.eq_ignore_ascii_case(CONTENT_LENGTH.as_str())
+                || k.eq_ignore_ascii_case(TRANSFER_ENCODING.as_str())
+            {
+                continue;
+            }
+            let v: &str = v.extract()?;
+            builder = builder.header(k, v);
+        }
+
+        Ok(HttpRequest(
             builder
                 .body(Bytes::copy_from_slice(body))
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,

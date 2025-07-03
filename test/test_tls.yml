@@ -11,7 +11,7 @@ tls_cert_file: ./test/keys/cert.pem
 tls_key_file: ./test/keys/key.pem
 #tls_ca_file: ./test/keys/ca-cert.pem
 
-dump_enabled: true
+dump_enabled: false
 dump_path: "./pcaps"
 dump_format: "{service}_{server_port}_{timestamp}.pcap"
 dump_interval: 30s
