@@ -1,7 +1,7 @@
 use futures::lock::Mutex;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
-use http_body_util::{BodyExt, Empty, Full, Limited, combinators::BoxBody};
+use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming as IncomingBody};
 use hyper::client::conn::http1::SendRequest;
 use hyper::service::Service as HyperService;
@@ -60,12 +60,6 @@ impl ProxyHyper {
         } else {
             None
         }
-    }
-
-    fn empty() -> BoxBody<Bytes, hyper::Error> {
-        Empty::<Bytes>::new()
-            .map_err(|never| match never {})
-            .boxed()
     }
 
     fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {

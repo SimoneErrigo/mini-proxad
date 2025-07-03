@@ -192,4 +192,4 @@ def server_raw_filter(flow: RawFlow, chunk: bytes) -> FilterOutput:
 
 # Gets executed everytime a flow is opened
 # def raw_open(flow):
-#    pass
+#    print(flow.server_history)

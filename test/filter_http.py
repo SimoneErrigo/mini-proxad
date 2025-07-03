@@ -7,6 +7,12 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
     print(req)
     print(resp)
 
+    print("URI", req.uri)
+    print("QUERY", req.uri.query)
+    print("DICT", req.uri.params)
+
+    flow.sess = True
+
     if b"FLAG" in resp.body:
         body = resp.body.replace(b"FLAG", b"skibidi")
         return HttpResp(resp.headers, body, resp.status)

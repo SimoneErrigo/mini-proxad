@@ -1,6 +1,6 @@
 use bytes::Bytes;
+use http::Method;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
-use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioTimer;
@@ -9,7 +9,7 @@ use pyo3::{Bound, FromPyObject, IntoPyObject, Py, PyAny, PyErr, PyResult, Python
 use std::{io::Write, time::Duration};
 
 use crate::config::Config;
-use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse};
+use crate::filter::api::{PyHttpMessage, PyHttpRequest, PyHttpResponse, PyUri};
 
 pub type BytesBody = BoxBody<Bytes, hyper::Error>;
 
@@ -160,7 +160,7 @@ impl<'py> IntoPyObject<'py> for HttpRequest {
 
         let body = PyBytes::new(py, &body).into();
         let method = parts.method.to_string();
-        let uri = PyBytes::new(py, parts.uri.to_string().as_bytes()).into();
+        let uri = Py::new(py, PyUri::py_new(parts.uri.to_string())?)?;
 
         let req: Py<PyHttpRequest> = Py::new(
             py,
@@ -177,7 +177,8 @@ impl<'py> FromPyObject<'py> for HttpRequest {
         let req = req_bound.borrow();
 
         let method = req.method.as_str();
-        let uri = req.uri.as_bytes(ob.py());
+        let uri_bound = req.uri.bind(ob.py()).downcast::<PyUri>()?.borrow();
+        let uri = &uri_bound.uri;
 
         let msg_bound: &Bound<'py, PyHttpMessage> = req_bound.as_super();
         let msg = msg_bound.borrow();
@@ -187,11 +188,9 @@ impl<'py> FromPyObject<'py> for HttpRequest {
 
         let mut builder = Request::builder()
             .method(method.parse::<Method>().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("bad method: {}", e))
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Bad HTTP method: {}", e))
             })?)
-            .uri(str::from_utf8(uri)?.parse::<Uri>().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("bad uri: {}", e))
-            })?);
+            .uri(uri);
 
         for (k, v) in headers.iter() {
             let k: &str = k.extract()?;
@@ -213,7 +212,6 @@ impl<'py> FromPyObject<'py> for HttpResponse {
         let resp = resp_bound.borrow();
 
         let status = resp.status;
-
         let msg_bound: &Bound<'py, PyHttpMessage> = resp_bound.as_super();
         let msg = msg_bound.borrow();
 

@@ -1,10 +1,14 @@
-use pyo3::types::{PyBytes, PyDict};
+use std::collections::HashMap;
+
+use http::Uri;
+use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::{PyTraverseError, PyVisit, prelude::*};
+use url::form_urlencoded;
 use uuid::Uuid;
 
 // TODO: Add a way to convert lazily into python object
 
-#[pyclass(name = "RawFlow", frozen)]
+#[pyclass(module = "proxad", name = "RawFlow", frozen, dict, freelist = 64)]
 pub struct PyRawFlow {
     #[pyo3(get)]
     id: Uuid,
@@ -47,7 +51,7 @@ impl PyRawFlow {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpFlow", frozen)]
+#[pyclass(module = "proxad", name = "HttpFlow", frozen, dict, freelist = 64)]
 pub struct PyHttpFlow {
     pub id: Uuid,
 }
@@ -64,7 +68,14 @@ impl PyHttpFlow {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpPart", subclass, get_all, set_all)]
+#[pyclass(
+    module = "proxad",
+    name = "HttpPart",
+    subclass,
+    get_all,
+    set_all,
+    freelist = 64
+)]
 pub struct PyHttpMessage {
     pub headers: Py<PyDict>,
     pub body: Py<PyBytes>,
@@ -94,7 +105,7 @@ impl PyHttpMessage {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpResp", extends = PyHttpMessage)]
+#[pyclass(module = "proxad", name = "HttpResp", extends = PyHttpMessage, freelist = 64)]
 pub struct PyHttpResponse {
     #[pyo3(get, set)]
     pub status: u16,
@@ -120,13 +131,13 @@ impl PyHttpResponse {
     }
 }
 
-#[pyclass(module = "proxad", name = "HttpReq", extends = PyHttpMessage)]
+#[pyclass(module = "proxad", name = "HttpReq", extends = PyHttpMessage, freelist = 64)]
 pub struct PyHttpRequest {
     #[pyo3(get, set)]
     pub method: String,
 
     #[pyo3(get, set)]
-    pub uri: Py<PyBytes>,
+    pub uri: Py<PyUri>,
 }
 
 #[pymethods]
@@ -136,7 +147,7 @@ impl PyHttpRequest {
         headers: Py<PyDict>,
         body: Py<PyBytes>,
         method: String,
-        uri: Py<PyBytes>,
+        uri: Py<PyUri>,
     ) -> PyClassInitializer<Self> {
         PyClassInitializer::from(PyHttpMessage::new(headers, body))
             .add_subclass(PyHttpRequest { method, uri })
@@ -157,6 +168,108 @@ impl PyHttpRequest {
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.uri)?;
         Ok(())
+    }
+}
+
+#[pyclass(module = "proxad", name = "Uri", freelist = 64)]
+pub struct PyUri {
+    pub uri: Uri,
+    params: Option<Py<PyDict>>,
+}
+
+#[pymethods]
+impl PyUri {
+    #[new]
+    pub fn py_new(raw: String) -> PyResult<Self> {
+        Ok(PyUri {
+            uri: raw.parse::<Uri>().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Bad uri: {}", e))
+            })?,
+            params: None,
+        })
+    }
+
+    fn __repr__(self_: PyRef<'_, Self>) -> String {
+        format!(
+            "Uri({})",
+            self_
+                .uri
+                .path_and_query()
+                .map(|v| v.as_str())
+                .unwrap_or_else(|| self_.uri.path())
+        )
+    }
+
+    fn str(self_: PyRef<'_, Self>) -> String {
+        self_.uri.to_string()
+    }
+
+    #[getter]
+    fn scheme(&self) -> String {
+        self.uri.scheme_str().unwrap_or_default().to_string()
+    }
+
+    #[getter]
+    fn authority(&self) -> String {
+        self.uri
+            .authority()
+            .map(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[getter]
+    fn host(&self) -> String {
+        self.uri.host().unwrap_or_default().to_string()
+    }
+
+    #[getter]
+    fn port(&self) -> Option<u16> {
+        self.uri.port_u16()
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.uri.path().to_string()
+    }
+
+    #[getter]
+    fn query(&self) -> String {
+        self.uri.query().unwrap_or_default().to_string()
+    }
+
+    #[getter]
+    fn params(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        if let Some(ref dict) = self.params {
+            return Ok(dict.clone_ref(py));
+        }
+
+        let dict = PyDict::new(py);
+        if let Some(query) = self.uri.query() {
+            let pairs = form_urlencoded::parse(query.as_bytes());
+
+            // Make a dict[list[str]]
+            for (k, v) in pairs {
+                if let Some(prev) = dict.get_item(&k)? {
+                    let list: &Bound<PyList> = prev.downcast()?;
+                    list.append(v)?;
+                } else {
+                    let list = PyList::empty(py);
+                    list.append(v)?;
+                    dict.set_item(k, list)?;
+                }
+            }
+        }
+
+        let dict: Py<PyDict> = dict.into();
+        self.params = Some(dict.clone_ref(py));
+        Ok(dict)
+    }
+}
+
+impl PyUri {
+    pub fn new(uri: Uri) -> Self {
+        PyUri { uri, params: None }
     }
 }
 
