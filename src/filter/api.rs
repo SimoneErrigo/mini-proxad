@@ -7,12 +7,15 @@ use uuid::Uuid;
 
 #[pyclass(module = "proxad", name = "RawFlow", frozen, dict, freelist = 64)]
 pub struct PyRawFlow {
+    /// Unique id of this flow
     #[pyo3(get)]
     id: Uuid,
 
+    /// All the bytes sent by the client so far
     #[pyo3(get)]
     client_history: Option<Py<PyBytes>>,
 
+    /// All the bytes sent by the server so far
     #[pyo3(get)]
     server_history: Option<Py<PyBytes>>,
 }
@@ -50,18 +53,21 @@ impl PyRawFlow {
 
 #[pyclass(module = "proxad", name = "HttpFlow", frozen, dict, freelist = 64)]
 pub struct PyHttpFlow {
+    /// Unique id of this flow
+    #[pyo3(get)]
     pub id: Uuid,
 }
 
 #[pymethods]
 impl PyHttpFlow {
-    #[new]
-    pub fn new(id: Uuid) -> Self {
-        PyHttpFlow { id }
-    }
-
     fn __str__(&self) -> String {
         format!("HttpFlow(id={})", self.id)
+    }
+}
+
+impl PyHttpFlow {
+    pub fn new(id: Uuid) -> Self {
+        PyHttpFlow { id }
     }
 }
 
@@ -74,13 +80,17 @@ impl PyHttpFlow {
     freelist = 64
 )]
 pub struct PyHttpMessage {
+    /// HTTP headers as a dict[str, str]
     pub headers: Py<PyDict>,
+
+    /// Body content as bytes
     pub body: Py<PyBytes>,
 }
 
 #[pymethods]
 impl PyHttpMessage {
     #[new]
+    #[pyo3(text_signature = "(headers: dict[str, str], body: bytes, /)")]
     pub fn new(headers: Py<PyDict>, body: Py<PyBytes>) -> Self {
         PyHttpMessage { headers, body }
     }
@@ -104,6 +114,7 @@ impl PyHttpMessage {
 
 #[pyclass(module = "proxad", name = "HttpResp", extends = PyHttpMessage, freelist = 64)]
 pub struct PyHttpResponse {
+    /// Status code (int) of this response
     #[pyo3(get, set)]
     pub status: u16,
 }
@@ -111,6 +122,7 @@ pub struct PyHttpResponse {
 #[pymethods]
 impl PyHttpResponse {
     #[new]
+    #[pyo3(text_signature = "(headers: dict[str, str], body: bytes, status: int, /)")]
     pub fn new(headers: Py<PyDict>, body: Py<PyBytes>, status: u16) -> PyClassInitializer<Self> {
         PyClassInitializer::from(PyHttpMessage::new(headers, body))
             .add_subclass(PyHttpResponse { status })
@@ -130,9 +142,11 @@ impl PyHttpResponse {
 
 #[pyclass(module = "proxad", name = "HttpReq", extends = PyHttpMessage, freelist = 64)]
 pub struct PyHttpRequest {
+    /// String with the HTTP method of this request
     #[pyo3(get, set)]
     pub method: String,
 
+    /// Uri object of this request
     #[pyo3(get, set)]
     pub uri: Py<PyUri>,
 }
@@ -140,6 +154,9 @@ pub struct PyHttpRequest {
 #[pymethods]
 impl PyHttpRequest {
     #[new]
+    #[pyo3(
+        text_signature = "(headers: dict[str, str], body: bytes, method: str, uri: proxad.Uri, /)"
+    )]
     pub fn new(
         headers: Py<PyDict>,
         body: Py<PyBytes>,
@@ -177,6 +194,7 @@ pub struct PyUri {
 #[pymethods]
 impl PyUri {
     #[new]
+    #[pyo3(text_signature = "(raw: str, /)")]
     pub fn py_new(raw: String) -> PyResult<Self> {
         Ok(PyUri {
             uri: raw.parse::<Uri>().map_err(|e| {
@@ -197,44 +215,49 @@ impl PyUri {
         )
     }
 
-    fn str(self_: PyRef<'_, Self>) -> String {
+    /// Return the original string representation of the uri
+    #[getter]
+    fn raw(self_: PyRef<'_, Self>) -> String {
         self_.uri.to_string()
     }
 
+    /// Return the scheme of the uri if present
     #[getter]
-    fn scheme(&self) -> String {
-        self.uri.scheme_str().unwrap_or_default().to_string()
+    fn scheme(&self) -> Option<String> {
+        self.uri.scheme_str().map(|v| v.to_string())
     }
 
+    /// Return the authority of the uri if present
     #[getter]
-    fn authority(&self) -> String {
-        self.uri
-            .authority()
-            .map(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string()
+    fn authority(&self) -> Option<String> {
+        self.uri.authority().map(|v| v.as_str().to_string())
     }
 
+    /// Return the host of the uri if present
     #[getter]
-    fn host(&self) -> String {
-        self.uri.host().unwrap_or_default().to_string()
+    fn host(&self) -> Option<String> {
+        self.uri.host().map(|v| v.to_string())
     }
 
+    /// Return the integer port of the uri if present
     #[getter]
     fn port(&self) -> Option<u16> {
         self.uri.port_u16()
     }
 
+    /// Return the path part of the uri
     #[getter]
     fn path(&self) -> String {
         self.uri.path().to_string()
     }
 
+    /// Return the query part of the uri if present
     #[getter]
     fn query(&self) -> String {
         self.uri.query().unwrap_or_default().to_string()
     }
 
+    /// Return the parsed query parameters if present
     #[getter]
     fn params(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         if let Some(ref dict) = self.params {
@@ -243,7 +266,7 @@ impl PyUri {
 
         let dict = PyDict::new(py);
         if let Some(query) = self.uri.query() {
-            // Make a dict[list[str]]
+            // Make a dict[str, list[str]]
             let pairs = form_urlencoded::parse(query.as_bytes());
             for (k, v) in pairs {
                 if let Some(prev) = dict.get_item(&k)? {
@@ -260,6 +283,15 @@ impl PyUri {
         let dict: Py<PyDict> = dict.into();
         self.params = Some(dict.clone_ref(py));
         Ok(dict)
+    }
+
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        visit.call(&self.params)?;
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.params = None;
     }
 }
 

@@ -9,9 +9,11 @@ def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
     print("URI", req.uri)
     print("QUERY", req.uri.query)
-    print("DICT", req.uri.params)
+    print("PARAMS", req.uri.params)
+    print("HEADERS", req.headers)
+    print("RAW", req.uri.raw)
 
-    flow.sess = True
+    flow.sess_id = True
 
     if b"FLAG" in resp.body:
         body = resp.body.replace(b"FLAG", b"skibidi")
