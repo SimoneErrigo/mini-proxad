@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::{Method, Uri};
 use http_body_util::combinators::BoxBody;
@@ -59,74 +58,15 @@ impl HttpConfig {
 #[derive(Debug, Clone)]
 pub struct HttpResponse(pub Response<Bytes>);
 
-#[derive(Debug, Clone)]
-pub struct HttpRequest(pub Request<Bytes>);
-
-#[derive(Debug, Clone)]
-pub enum HttpMessage {
-    Response {
-        response: HttpResponse,
-        timestamp: DateTime<Utc>,
-    },
-    Request {
-        request: HttpRequest,
-        timestamp: DateTime<Utc>,
-    },
-}
-
-impl HttpMessage {
+impl HttpResponse {
     pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            HttpMessage::Response { response, .. } => Self::response_to_bytes(&response.0),
-            HttpMessage::Request { request, .. } => Self::request_to_bytes(&request.0),
-        }
-    }
-
-    pub fn timestamp(&self) -> DateTime<Utc> {
-        match self {
-            HttpMessage::Response { timestamp, .. } => *timestamp,
-            HttpMessage::Request { timestamp, .. } => *timestamp,
-        }
-    }
-
-    fn version_to_bytes(ver: http::Version) -> &'static str {
-        match ver {
-            http::Version::HTTP_09 => "HTTP/0.9",
-            http::Version::HTTP_10 => "HTTP/1.0",
-            http::Version::HTTP_11 => "HTTP/1.1",
-            http::Version::HTTP_2 => "HTTP/2.0",
-            http::Version::HTTP_3 => "HTTP/3.0",
-            _ => panic!("There were more?"),
-        }
-    }
-
-    fn request_to_bytes(req: &Request<Bytes>) -> Vec<u8> {
-        let mut buf = Vec::new();
-        write!(
-            &mut buf,
-            "{} {} {}\r\n",
-            req.method(),
-            req.uri(),
-            Self::version_to_bytes(req.version())
-        )
-        .unwrap();
-
-        for (name, value) in req.headers() {
-            write!(&mut buf, "{}: {}\r\n", name, value.to_str().unwrap()).unwrap();
-        }
-        buf.extend_from_slice(b"\r\n");
-
-        buf.extend_from_slice(&req.body()[..]);
-        buf
-    }
-
-    fn response_to_bytes(resp: &Response<Bytes>) -> Vec<u8> {
+        let resp = &self.0;
         let mut buf = Vec::new();
 
         write!(
             &mut buf,
             "{} {} {}\r\n",
-            Self::version_to_bytes(resp.version()),
+            version_to_bytes(resp.version()),
             resp.status().as_u16(),
             resp.status().canonical_reason().unwrap_or(""),
         )
@@ -139,6 +79,44 @@ impl HttpMessage {
 
         buf.extend_from_slice(&resp.body()[..]);
         buf
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpRequest(pub Request<Bytes>);
+
+impl HttpRequest {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let req = &self.0;
+        let mut buf = Vec::new();
+
+        write!(
+            &mut buf,
+            "{} {} {}\r\n",
+            req.method(),
+            req.uri(),
+            version_to_bytes(req.version())
+        )
+        .unwrap();
+
+        for (name, value) in req.headers() {
+            write!(&mut buf, "{}: {}\r\n", name, value.to_str().unwrap()).unwrap();
+        }
+        buf.extend_from_slice(b"\r\n");
+
+        buf.extend_from_slice(&req.body()[..]);
+        buf
+    }
+}
+
+fn version_to_bytes(ver: http::Version) -> &'static str {
+    match ver {
+        http::Version::HTTP_09 => "HTTP/0.9",
+        http::Version::HTTP_10 => "HTTP/1.0",
+        http::Version::HTTP_11 => "HTTP/1.1",
+        http::Version::HTTP_2 => "HTTP/2.0",
+        http::Version::HTTP_3 => "HTTP/3.0",
+        _ => panic!("There were more?"),
     }
 }
 
@@ -190,25 +168,6 @@ impl<'py> IntoPyObject<'py> for HttpRequest {
         )?;
 
         Ok(req.into_bound(py))
-    }
-}
-
-impl<'py> IntoPyObject<'py> for HttpMessage {
-    type Target = PyHttpMessage;
-    type Output = Bound<'py, Self::Target>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        match self {
-            HttpMessage::Response { response, .. } => {
-                let resp: Bound<'py, PyHttpResponse> = response.into_pyobject(py)?;
-                Ok(resp.into_super())
-            }
-            HttpMessage::Request { request, .. } => {
-                let req: Bound<'py, PyHttpRequest> = request.into_pyobject(py)?;
-                Ok(req.into_super())
-            }
-        }
     }
 }
 

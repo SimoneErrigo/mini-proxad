@@ -3,10 +3,11 @@ use chrono::{DateTime, Utc};
 use hyper::{Request, Response};
 use std::ops::Range;
 
-use crate::http::{HttpMessage, HttpRequest, HttpResponse};
+use crate::http::{HttpRequest, HttpResponse};
 
 pub struct HttpHistory {
-    pub messages: Vec<HttpMessage>,
+    pub requests: Vec<(HttpRequest, DateTime<Utc>)>,
+    pub responses: Vec<(HttpResponse, DateTime<Utc>)>,
     pub client_size: usize,
     pub server_size: usize,
     pub client_max: usize,
@@ -16,7 +17,8 @@ pub struct HttpHistory {
 impl HttpHistory {
     pub fn new(client_max: usize, server_max: usize) -> Self {
         HttpHistory {
-            messages: vec![],
+            requests: vec![],
+            responses: vec![],
             client_size: 0,
             server_size: 0,
             client_max,
@@ -28,10 +30,8 @@ impl HttpHistory {
         if len + self.client_size > self.client_max {
             false
         } else {
-            self.messages.push(HttpMessage::Request {
-                request: HttpRequest(req),
-                timestamp: Utc::now(),
-            });
+            self.client_size += len;
+            self.requests.push((HttpRequest(req), Utc::now()));
             true
         }
     }
@@ -40,10 +40,8 @@ impl HttpHistory {
         if len + self.server_size > self.server_max {
             false
         } else {
-            self.messages.push(HttpMessage::Response {
-                response: HttpResponse(resp),
-                timestamp: Utc::now(),
-            });
+            self.server_size += len;
+            self.responses.push((HttpResponse(resp), Utc::now()));
             true
         }
     }

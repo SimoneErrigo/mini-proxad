@@ -1,7 +1,6 @@
 pub mod api;
 
 use anyhow::Context;
-use chrono::Utc;
 use either::Either;
 use futures_util::StreamExt;
 use inotify::{Inotify, WatchMask};
@@ -18,14 +17,14 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::filter::api::{PyFlow, PyHttpResponse};
+use crate::filter::api::{PyHttpFlow, PyHttpResponse, PyRawFlow};
 use crate::flow::history::RawHistory;
 use crate::flow::{HttpFlow, RawFlow};
-use crate::http::{HttpMessage, HttpResponse};
+use crate::http::HttpResponse;
 
 const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(2);
 
-const HTTP_FILTER_FUNC: &str = "http_response_filter";
+const HTTP_FILTER_FUNC: &str = "http_filter";
 const HTTP_OPEN_FUNC: &str = "http_open";
 
 const RAW_CLIENT_FUNC: &str = "client_raw_filter";
@@ -101,28 +100,32 @@ impl Filter {
         })
     }
 
-    pub async fn on_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+    pub async fn on_http_response(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.http_filter {
             let result: anyhow::Result<Either<Option<Py<PyHttpResponse>>, Py<PyEllipsis>>> =
                 Python::with_gil(|py| {
+                    let req = flow
+                        .history
+                        .requests
+                        .last()
+                        .map(|(req, _)| req)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
+                        .into_pyobject(py)?;
+
                     let resp = flow
                         .history
-                        .messages
+                        .responses
                         .last()
+                        .map(|(resp, _)| resp)
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("Where is the response?"))?
                         .into_pyobject(py)?;
 
                     debug!("Running filter {} for flow {}", HTTP_FILTER_FUNC, flow.id);
-                    let args = (PyFlow::new(flow.id), &resp);
+                    let args = (PyHttpFlow::new(flow.id), &req, &resp);
                     let result = func.bind(py).call1(args)?;
-
-                    if result.is(resp) {
-                        trace!("Python returned the original response, ignoring");
-                        Ok(Either::Left(None))
-                    } else {
-                        Ok(result.extract()?)
-                    }
+                    Ok(result.extract()?)
                 });
 
             match result {
@@ -133,10 +136,8 @@ impl Filter {
                     Python::with_gil(|py| match resp.extract::<HttpResponse>(py) {
                         Ok(resp) => {
                             trace!("Modified response: {:?}", resp);
-                            let last = flow.history.messages.last_mut().unwrap();
-                            *last = HttpMessage::Response {
-                                response: resp,
-                                timestamp: Utc::now(),
+                            if let Some((last, _)) = flow.history.responses.last_mut() {
+                                *last = resp;
                             }
                         }
                         Err(e) => warn!("Failed to convert bytes: {}", e),
@@ -153,7 +154,7 @@ impl Filter {
     pub async fn on_http_open(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.http_open {
             let result: anyhow::Result<Option<Py<PyEllipsis>>> = Python::with_gil(|py| {
-                let args = (PyFlow::new(flow.id),);
+                let args = (PyHttpFlow::new(flow.id),);
                 debug!("Running filter {} on flow {}", HTTP_OPEN_FUNC, flow.id);
                 let result = func.bind(py).call1(args)?;
                 Ok(result.extract()?)
@@ -201,10 +202,12 @@ impl Filter {
                 Python::with_gil(|py| {
                     let bytes = PyBytes::new(py, flow.client_history.last_chunk());
                     let args = (
-                        PyFlow::new(flow.id),
+                        PyRawFlow::new(
+                            flow.id,
+                            &flow.client_history.bytes,
+                            &flow.server_history.bytes,
+                        ),
                         &bytes,
-                        &flow.client_history.bytes,
-                        &flow.server_history.bytes,
                     );
 
                     debug!("Running filter {} on flow {}", RAW_CLIENT_FUNC, flow.id);
@@ -230,10 +233,12 @@ impl Filter {
                 Python::with_gil(|py| {
                     let bytes = PyBytes::new(py, flow.server_history.last_chunk());
                     let args = (
-                        PyFlow::new(flow.id),
+                        PyRawFlow::new(
+                            flow.id,
+                            &flow.client_history.bytes,
+                            &flow.server_history.bytes,
+                        ),
                         &bytes,
-                        &flow.client_history.bytes,
-                        &flow.server_history.bytes,
                     );
 
                     debug!("Running filter {} on flow {}", RAW_SERVER_FUNC, flow.id);
@@ -256,7 +261,7 @@ impl Filter {
     pub async fn on_raw_open(&self, flow: &mut RawFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.raw_open {
             let result: anyhow::Result<Option<Py<PyEllipsis>>> = Python::with_gil(|py| {
-                let args = (PyFlow::new(flow.id),);
+                let args = (PyRawFlow::new_empty(flow.id),);
                 debug!("Running filter {} on flow {}", RAW_OPEN_FUNC, flow.id);
                 let result = func.bind(py).call1(args)?;
                 Ok(result.extract()?)

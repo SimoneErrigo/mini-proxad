@@ -13,7 +13,7 @@ use tokio::time;
 use tracing::{error, info, trace};
 
 use crate::flow::{HttpFlow, IsFlow};
-use crate::http::{BytesBody, HttpMessage};
+use crate::http::{BytesBody, HttpResponse};
 use crate::proxy::Proxy;
 use crate::run_filter;
 
@@ -182,14 +182,14 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
 
             let resp = {
                 let mut guard = service.inner.lock().await;
-                run_filter!(service.proxy, on_response, &mut guard.flow, {
+                run_filter!(service.proxy, on_http_response, &mut guard.flow, {
                     info!("Python server filter killed flow {}", guard.flow.get_id());
                     anyhow::bail!(FILTER_KILLED)
                 });
 
-                match guard.flow.history.messages.last() {
-                    Some(HttpMessage::Response { response, .. }) => {
-                        let (parts, body) = response.0.clone().into_parts();
+                match guard.flow.history.responses.last() {
+                    Some((HttpResponse(resp), _)) => {
+                        let (parts, body) = resp.clone().into_parts();
                         Response::from_parts(parts, Self::full(body))
                     }
                     _ => {

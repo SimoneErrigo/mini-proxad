@@ -1,10 +1,11 @@
 use std::{borrow::Cow, net::SocketAddr};
 
 use chrono::{DateTime, Utc};
+use either::Either;
 
 use crate::{
     flow::{Flow, HttpFlow, RawFlow, history::RawChunk},
-    http::HttpMessage,
+    http::{HttpRequest, HttpResponse},
 };
 
 impl<'a> IntoIterator for &'a Flow {
@@ -37,45 +38,58 @@ impl<'a> Iterator for FlowIterator<'a> {
                 };
                 (addr, chunk.timestamp, bytes)
             }),
-            FlowIterator::Http(http) => http
-                .next()
-                .map(|(addr, message)| (addr, message.timestamp(), Cow::Owned(message.to_bytes()))),
+            FlowIterator::Http(http) => http.next().map(|(addr, ts, http)| match http {
+                Either::Left(req) => (addr, ts, Cow::Owned(req.to_bytes())),
+                Either::Right(resp) => (addr, ts, Cow::Owned(resp.to_bytes())),
+            }),
         }
     }
 }
 
+pub type EitherHttp<'a> = Either<&'a HttpRequest, &'a HttpResponse>;
+
 impl<'a> IntoIterator for &'a HttpFlow {
-    type Item = (SocketAddr, &'a HttpMessage);
+    type Item = (SocketAddr, DateTime<Utc>, EitherHttp<'a>);
     type IntoIter = HttpFlowIterator<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         HttpFlowIterator {
             flow: self,
-            index: 0,
+            client_index: 0,
+            server_index: 0,
         }
     }
 }
 
 pub struct HttpFlowIterator<'a> {
     flow: &'a HttpFlow,
-    index: usize,
+    client_index: usize,
+    server_index: usize,
 }
 
 impl<'a> Iterator for HttpFlowIterator<'a> {
-    type Item = (SocketAddr, &'a HttpMessage);
+    type Item = (SocketAddr, DateTime<Utc>, EitherHttp<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let message = self.flow.history.messages.get(self.index);
-        match message {
-            Some(req @ HttpMessage::Request { .. }) => {
-                self.index += 1;
-                Some((self.flow.client_addr, req))
-            }
-            Some(resp @ HttpMessage::Response { .. }) => {
-                self.index += 1;
-                Some((self.flow.server_addr, resp))
-            }
-            None => None,
+        if self.client_index <= self.server_index {
+            // grab the (HttpRequest, DateTime) tuple by reference
+            self.flow
+                .history
+                .requests
+                .get(self.client_index)
+                .map(|(req, ts)| {
+                    self.client_index += 1;
+                    (self.flow.client_addr, *ts, Either::Left(req))
+                })
+        } else {
+            self.flow
+                .history
+                .responses
+                .get(self.server_index)
+                .map(|(resp, ts)| {
+                    self.server_index += 1;
+                    (self.flow.server_addr, *ts, Either::Right(resp))
+                })
         }
     }
 }

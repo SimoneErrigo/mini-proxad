@@ -4,6 +4,7 @@ import types
 import typing
 import sys
 import traceback
+from proxad import HttpResponse, HttpRequest, HttpFlow
 
 
 # Use a fake python module to hold state between file reloads
@@ -195,9 +196,28 @@ def server_filter_history(
     return run_filters(id, chunk, client_history, server_history, SERVER_FILTERS)
 
 
-def http_filter(id, resp):
-    print(id)
-
+def http_filter(flow, req, resp):
+    print(flow)
+    print(req)
     print(resp)
-    resp.body = resp.body.replace(b"world", b"FLAG")
-    return resp
+
+    body = resp.body.replace(b"world", b"skibidi")
+    return HttpResponse(resp.headers, body, resp.status)
+
+
+def http_open(flow):
+    print(flow)
+
+
+def raw_open(flow):
+    print(flow)
+
+
+def client_raw_filter(flow, chunk):
+    print(flow)
+    print(chunk)
+
+
+def server_raw_filter(flow, chunk):
+    print(flow)
+    print(chunk)
