@@ -53,10 +53,6 @@ impl Filter {
             let module = PyModule::new(py, "proxad")?;
             api::register_proxad(&module)?;
 
-            let child = PyModule::new(py, "http")?;
-            api::register_proxad_http(&child)?;
-            module.add_submodule(&child)?;
-
             let path_list = PyList::new(py, &[""])?;
             module.setattr("__path__", path_list)?;
 
@@ -66,7 +62,6 @@ impl Filter {
                 .expect("Python exploded :(");
 
             sys_modules.set_item("proxad", module)?;
-            sys_modules.set_item("proxad.http", child)?;
 
             Ok(())
         })

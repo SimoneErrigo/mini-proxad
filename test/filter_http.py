@@ -1,16 +1,15 @@
-from proxad import HttpFlow
-from proxad.http import Response, Request
+from proxad import HttpFlow, HttpResp, HttpReq
 
 
 # Gets executed on every request / response pair
-def http_filter(flow: HttpFlow, req: Request, resp: Response):
+def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
     print(flow)
     print(req)
     print(resp)
 
     if b"FLAG" in resp.body:
         body = resp.body.replace(b"FLAG", b"skibidi")
-        return Response(resp.headers, body, resp.status)
+        return HttpResp(resp.headers, body, resp.status)
 
     resp.body = resp.body.replace(b"world", b"skibidi")
     return resp

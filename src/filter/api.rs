@@ -64,7 +64,7 @@ impl PyHttpFlow {
     }
 }
 
-#[pyclass(module = "proxad.http", name = "Message", subclass, get_all, set_all)]
+#[pyclass(module = "proxad", name = "HttpPart", subclass, get_all, set_all)]
 pub struct PyHttpMessage {
     pub headers: Py<PyDict>,
     pub body: Py<PyBytes>,
@@ -94,7 +94,7 @@ impl PyHttpMessage {
     }
 }
 
-#[pyclass(module = "proxad.http", name = "Response", extends = PyHttpMessage)]
+#[pyclass(module = "proxad", name = "HttpResp", extends = PyHttpMessage)]
 pub struct PyHttpResponse {
     #[pyo3(get, set)]
     pub status: u16,
@@ -120,7 +120,7 @@ impl PyHttpResponse {
     }
 }
 
-#[pyclass(module = "proxad.http", name = "Request", extends = PyHttpMessage)]
+#[pyclass(module = "proxad", name = "HttpReq", extends = PyHttpMessage)]
 pub struct PyHttpRequest {
     #[pyo3(get, set)]
     pub method: String,
@@ -163,13 +163,6 @@ impl PyHttpRequest {
 pub fn register_proxad(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRawFlow>()?;
     module.add_class::<PyHttpFlow>()?;
-    module.add_class::<PyHttpMessage>()?;
-    module.add_class::<PyHttpResponse>()?;
-    module.add_class::<PyHttpRequest>()?;
-    Ok(())
-}
-
-pub fn register_proxad_http(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyHttpMessage>()?;
     module.add_class::<PyHttpResponse>()?;
     module.add_class::<PyHttpRequest>()?;
