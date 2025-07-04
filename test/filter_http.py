@@ -26,9 +26,10 @@ class ColorFormatter(logging.Formatter):
 logger = logging.getLogger("mini-proxad")
 # logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setFormatter(ColorFormatter("[%(levelname)s] %(message)s"))
-logger.addHandler(handler)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("[%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
 
 
 # HTTP session tracking
