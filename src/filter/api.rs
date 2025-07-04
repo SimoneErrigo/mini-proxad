@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use http::Uri;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use pyo3::{PyTraverseError, PyVisit, prelude::*};
@@ -58,6 +59,18 @@ pub struct PyHttpFlow {
     /// Unique id of this flow
     #[pyo3(get)]
     pub id: Uuid,
+
+    /// Start time of this flow
+    #[pyo3(get)]
+    pub start_time: DateTime<Utc>,
+
+    /// Receive time of the last request
+    #[pyo3(get)]
+    pub request_time: Option<DateTime<Utc>>,
+
+    /// Receive time of the last response
+    #[pyo3(get)]
+    pub response_time: Option<DateTime<Utc>>,
 }
 
 #[pymethods]
@@ -68,8 +81,18 @@ impl PyHttpFlow {
 }
 
 impl PyHttpFlow {
-    pub fn new(id: Uuid) -> Self {
-        PyHttpFlow { id }
+    pub fn new(
+        id: Uuid,
+        start: DateTime<Utc>,
+        last_req: Option<DateTime<Utc>>,
+        last_resp: Option<DateTime<Utc>>,
+    ) -> Self {
+        PyHttpFlow {
+            id,
+            start_time: start,
+            request_time: last_req,
+            response_time: last_resp,
+        }
     }
 }
 

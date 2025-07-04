@@ -197,11 +197,14 @@ def find_session_id(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
 
 def myfilter(flow, req, resp):
+    print(flow.start_time.timestamp(), flow.request_time, flow.response_time)
+
     resp.headers["ciao"] = "1"
     return resp
 
 
 FILTERS = [
+    myfilter,
     regex_filter,
     # method_filter,
     # params_filter,

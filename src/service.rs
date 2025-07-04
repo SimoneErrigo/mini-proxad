@@ -8,7 +8,7 @@ use crate::filter::Filter;
 use crate::http::HttpConfig;
 use crate::tls::TlsConfig;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Service {
     pub name: String,
     pub client_addr: SocketAddr,

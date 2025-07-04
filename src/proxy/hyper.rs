@@ -8,7 +8,7 @@ use hyper::{Request, Response};
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 use tokio::time;
 use tracing::{error, info, trace};
 

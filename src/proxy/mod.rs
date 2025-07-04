@@ -155,7 +155,7 @@ impl Proxy {
                         };
 
                         match upstream.await {
-                            Ok(_) => info!("Upstream HTTP connection closed"),
+                            Ok(_) => debug!("Upstream HTTP connection closed"),
                             Err(e) => warn!("Upstream HTTP connection error: {:?}", e),
                         };
 

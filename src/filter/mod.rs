@@ -31,13 +31,11 @@ const RAW_CLIENT_FUNC: &str = "client_raw_filter";
 const RAW_SERVER_FUNC: &str = "server_raw_filter";
 const RAW_OPEN_FUNC: &str = "raw_open";
 
-#[derive(Debug)]
 pub struct Filter {
     pub script_path: CString,
     inner: RwLock<FilterModule>,
 }
 
-#[derive(Debug)]
 struct FilterModule {
     module: Py<PyModule>,
     http_filter: Option<Py<PyAny>>,
@@ -108,26 +106,28 @@ impl Filter {
         if let Some(ref func) = self.inner.read().await.http_filter {
             let result: anyhow::Result<Either<Option<Py<PyHttpResp>>, Py<PyEllipsis>>> =
                 Python::with_gil(|py| {
-                    let req = flow
+                    let (req, req_time) = flow
                         .history
                         .requests
                         .last()
-                        .map(|(req, _)| req)
                         .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?
-                        .into_pyobject(py)?;
+                        .map(|(req, time)| (req.into_pyobject(py), time))
+                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?;
 
-                    let resp = flow
+                    let (resp, resp_time) = flow
                         .history
                         .responses
                         .last()
-                        .map(|(resp, _)| resp)
                         .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("Where is the response?"))?
-                        .into_pyobject(py)?;
+                        .map(|(resp, time)| (resp.into_pyobject(py), time))
+                        .ok_or_else(|| anyhow::anyhow!("Where is the response?"))?;
 
                     debug!("Running filter {} for flow {}", HTTP_FILTER_FUNC, flow.id);
-                    let args = (PyHttpFlow::new(flow.id), &req, &resp);
+                    let args = (
+                        PyHttpFlow::new(flow.id, flow.start, Some(req_time), Some(resp_time)),
+                        &req?,
+                        &resp?,
+                    );
                     let result = func.bind(py).call1(args)?;
                     Ok(result.extract()?)
                 });
@@ -158,7 +158,7 @@ impl Filter {
     pub async fn on_http_open(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.http_open {
             let result: anyhow::Result<Option<Py<PyEllipsis>>> = Python::with_gil(|py| {
-                let args = (PyHttpFlow::new(flow.id),);
+                let args = (PyHttpFlow::new(flow.id, flow.start, None, None),);
                 debug!("Running filter {} on flow {}", HTTP_OPEN_FUNC, flow.id);
                 let result = func.bind(py).call1(args)?;
                 Ok(result.extract()?)

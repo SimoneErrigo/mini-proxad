@@ -1,4 +1,3 @@
-use anyhow::Context;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::ServerConfig;
