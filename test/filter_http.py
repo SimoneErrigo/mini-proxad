@@ -165,9 +165,9 @@ def regex_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
 
 
 def block_response(resp):
-    return INFINITE_LOADING_RESPONSE
+    # return INFINITE_LOADING_RESPONSE
     # return ERROR_RESPONSE
-    # return ...
+    return ...
 
 
 def replace_flag(resp):
@@ -203,7 +203,7 @@ FILTERS = [
     # method_filter,
     # params_filter,
     # nonprintable_params_filter,
-    # useragent_whitelist_filter,
+    useragent_whitelist_filter,
     # useragent_blacklist_filter,
     # accept_encoding_filter,
     # multiple_flags_filter,

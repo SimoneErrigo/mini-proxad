@@ -16,6 +16,7 @@ use crate::stream::{ChunkRead, ChunkStream, ChunkWrite};
 use anyhow::Context;
 use chrono::Utc;
 use hyper_util::rt::TokioIo;
+use std::error::Error;
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -126,19 +127,13 @@ impl Proxy {
                 let server_io = TokioIo::new(server);
 
                 if let Ok((sender, conn)) = http.client_builder().handshake(server_io).await {
-                    let upstream = tokio::spawn(async move {
-                        match conn.await {
-                            Ok(_) => debug!("Upstream HTTP connection closed"),
-                            Err(e) => warn!("Upstream HTTP connection error: {:?}", e),
-                        }
-                    });
-
                     run_filter!(proxy, on_http_open, &mut flow, {
                         info!("Python client filter killed flow {}", flow.id);
-                        upstream.abort();
+                        drop(sender);
                         continue;
                     });
 
+                    let upstream = tokio::spawn(conn);
                     let service = ProxyHyper::new(proxy, sender, http.max_body, flow);
                     let clone = service.clone();
 
@@ -152,10 +147,18 @@ impl Proxy {
                             Err(e) if e.is_timeout() => {
                                 info!("Closed flow from {} for timeout", client_addr)
                             }
-                            Err(e) => warn!("Error in flow from {}: {:?}", client_addr, e),
+                            Err(e) => warn!(
+                                "Error in flow from {}: {:?}",
+                                client_addr,
+                                e.source().unwrap_or(&e)
+                            ),
                         };
 
-                        upstream.abort();
+                        match upstream.await {
+                            Ok(_) => info!("Upstream HTTP connection closed"),
+                            Err(e) => warn!("Upstream HTTP connection error: {:?}", e),
+                        };
+
                         if let Some(flow) = clone.into_flow() {
                             if let Some(ref channel) = dumper {
                                 if let Err(e) = channel.try_send(Flow::Http(flow)) {
