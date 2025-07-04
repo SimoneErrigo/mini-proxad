@@ -1,4 +1,3 @@
-use futures::lock::Mutex;
 use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http_body_util::{BodyExt, Full, Limited, combinators::BoxBody};
@@ -9,6 +8,7 @@ use hyper::{Request, Response};
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time;
 use tracing::{error, info, trace};
 
@@ -22,6 +22,8 @@ const REQUEST_TOO_BIG: &str = "Response body too big";
 const FILTER_KILLED: &str = "Killed by filter";
 const FILTER_INVALID: &str = "Invalid filter output";
 const SERVER_TIMEOUT: &str = "Server timeout elapsed";
+const CLIENT_HISTORY: &str = "Client history too big";
+const SERVER_HISTORY: &str = "Server history too big";
 
 struct ProxyHyperInner {
     sender: SendRequest<BytesBody>,
@@ -80,14 +82,14 @@ impl ProxyHyper {
 
         let mut guard = self.inner.lock().await;
         if !guard.flow.history.push_request(req, len) {
-            Err(anyhow::anyhow!("Client history too big"))
+            Err(anyhow::anyhow!(CLIENT_HISTORY))
         } else {
             Ok(())
         }
     }
 
     async fn push_response(&self, mut resp: Response<Bytes>, len: usize) -> anyhow::Result<()> {
-        info!("Server responded with {}", resp.status().as_u16());
+        info!("Server responded with status {}", resp.status().as_u16());
         trace!("{:#?}", resp);
 
         if resp.headers().contains_key(TRANSFER_ENCODING) {
@@ -98,7 +100,7 @@ impl ProxyHyper {
 
         let mut guard = self.inner.lock().await;
         if !guard.flow.history.push_response(resp, len) {
-            Err(anyhow::anyhow!("Server history too big"))
+            Err(anyhow::anyhow!(SERVER_HISTORY))
         } else {
             Ok(())
         }

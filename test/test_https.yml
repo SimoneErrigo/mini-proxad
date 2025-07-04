@@ -4,7 +4,7 @@ client_port: 9443
 server_ip: 0.0.0.0
 server_port: 8443
 script_path: ./test/filter_http.py
-client_max_history: 100Mib
+client_max_history: 1b
 client_timeout: 10s
 
 tls_enabled: true
