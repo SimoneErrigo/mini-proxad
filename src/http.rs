@@ -59,7 +59,7 @@ impl HttpConfig {
 pub struct HttpResponse(pub Response<Bytes>);
 
 impl HttpResponse {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let resp = &self.0;
         let mut buf = Vec::new();
 
@@ -68,17 +68,16 @@ impl HttpResponse {
             "{} {} {}\r\n",
             version_to_bytes(resp.version()),
             resp.status().as_u16(),
-            resp.status().canonical_reason().unwrap_or(""),
-        )
-        .unwrap();
+            resp.status().canonical_reason().unwrap_or("")
+        )?;
 
         for (name, value) in resp.headers() {
-            write!(&mut buf, "{}: {}\r\n", name, value.to_str().unwrap()).unwrap();
+            write!(&mut buf, "{}: {}\r\n", name, value.to_str()?)?;
         }
         buf.extend_from_slice(b"\r\n");
 
         buf.extend_from_slice(&resp.body()[..]);
-        buf
+        Ok(buf)
     }
 }
 
@@ -86,7 +85,7 @@ impl HttpResponse {
 pub struct HttpRequest(pub Request<Bytes>);
 
 impl HttpRequest {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let req = &self.0;
         let mut buf = Vec::new();
 
@@ -96,16 +95,15 @@ impl HttpRequest {
             req.method(),
             req.uri(),
             version_to_bytes(req.version())
-        )
-        .unwrap();
+        )?;
 
         for (name, value) in req.headers() {
-            write!(&mut buf, "{}: {}\r\n", name, value.to_str().unwrap()).unwrap();
+            write!(&mut buf, "{}: {}\r\n", name, value.to_str()?)?;
         }
         buf.extend_from_slice(b"\r\n");
 
         buf.extend_from_slice(&req.body()[..]);
-        buf
+        Ok(buf)
     }
 }
 

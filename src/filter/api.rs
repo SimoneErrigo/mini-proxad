@@ -147,7 +147,15 @@ impl PyHttpResp {
         cached_getter!(self, py, resp, headers, {
             let headers = PyDict::new(py);
             for (name, value) in resp.0.headers().iter() {
-                headers.set_item(name.as_str(), value.to_str().unwrap())?;
+                headers.set_item(
+                    name.as_str(),
+                    value.to_str().map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                            "Invalid header: {}",
+                            e
+                        ))
+                    })?,
+                )?;
             }
             <Py<PyDict>>::from(headers)
         })
@@ -183,7 +191,15 @@ impl PyHttpResp {
     #[getter]
     fn get_raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         cached_getter!(self, py, resp, raw, {
-            <Py<PyBytes>>::from(PyBytes::new(py, &resp.to_bytes()))
+            <Py<PyBytes>>::from(PyBytes::new(
+                py,
+                &resp.to_bytes().map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid HttpResp object: {}",
+                        e
+                    ))
+                })?,
+            ))
         })
     }
 
@@ -294,7 +310,15 @@ impl PyHttpReq {
         cached_getter!(self, py, req, headers, {
             let headers = PyDict::new(py);
             for (name, value) in req.0.headers().iter() {
-                headers.set_item(name.as_str(), value.to_str().unwrap())?;
+                headers.set_item(
+                    name.as_str(),
+                    value.to_str().map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                            "Invalid header: {}",
+                            e
+                        ))
+                    })?,
+                )?;
             }
             <Py<PyDict>>::from(headers)
         })
@@ -328,7 +352,15 @@ impl PyHttpReq {
     #[getter]
     fn get_raw(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         cached_getter!(self, py, req, raw, {
-            <Py<PyBytes>>::from(PyBytes::new(py, &req.to_bytes()))
+            <Py<PyBytes>>::from(PyBytes::new(
+                py,
+                &req.to_bytes().map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Invalid HttpReq object: {}",
+                        e
+                    ))
+                })?,
+            ))
         })
     }
 

@@ -30,7 +30,7 @@ impl Connector {
     pub async fn connect(&self) -> anyhow::Result<ProxyStream> {
         let stream = TcpStream::connect(self.server_addr).await?;
         if let Some(ref connector) = self.tls_connector {
-            let server_name = self.server_name.clone().unwrap();
+            let server_name = self.server_name.clone().expect("Initialized by TLS");
             Ok(Box::pin(connector.connect(server_name, stream).await?))
         } else {
             Ok(Box::pin(stream))

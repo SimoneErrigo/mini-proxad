@@ -1,3 +1,4 @@
+use anyhow::Context;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::ServerConfig;
@@ -23,7 +24,8 @@ impl TlsConfig {
         let mut root_store = RootCertStore::empty();
         if let Some(ca_path) = ca_path {
             root_store.add_parsable_certificates(
-                CertificateDer::pem_file_iter(ca_path)?.map(|result| result.unwrap()),
+                CertificateDer::pem_file_iter(ca_path)?
+                    .map(|result| result.expect("Invalid TLS certificate?")),
             );
         } else {
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

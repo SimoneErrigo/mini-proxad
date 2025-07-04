@@ -38,9 +38,22 @@ impl<'a> Iterator for FlowIterator<'a> {
                 };
                 (addr, chunk.timestamp, bytes)
             }),
+            // FIXME: Handle properly the case when to_bytes fails...
             FlowIterator::Http(http) => http.next().map(|(addr, ts, http)| match http {
-                Either::Left(req) => (addr, ts, Cow::Owned(req.to_bytes())),
-                Either::Right(resp) => (addr, ts, Cow::Owned(resp.to_bytes())),
+                Either::Left(req) => (
+                    addr,
+                    ts,
+                    req.to_bytes()
+                        .map(|b| Cow::Owned(b))
+                        .unwrap_or(Cow::Borrowed(&[] as &[u8])),
+                ),
+                Either::Right(resp) => (
+                    addr,
+                    ts,
+                    resp.to_bytes()
+                        .map(|b| Cow::Owned(b))
+                        .unwrap_or(Cow::Borrowed(&[] as &[u8])),
+                ),
             }),
         }
     }
