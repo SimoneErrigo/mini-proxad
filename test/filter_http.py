@@ -218,7 +218,7 @@ FILTERS = [
 
 # Gets executed on every request / response pair
 def http_filter(flow: HttpFlow, req: HttpReq, resp: HttpResp):
-    flow.session_id = find_session_id(flow, req, resp)
+    flow.session_id = TRACK_HTTP_SESSION and find_session_id(flow, req, resp)
 
     for f in FILTERS:
         result = f(flow, req, resp)
