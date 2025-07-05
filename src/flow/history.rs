@@ -77,6 +77,13 @@ impl RawHistory {
         &self.bytes[range]
     }
 
+    pub fn last_timestamp(&self) -> DateTime<Utc> {
+        self.chunks
+            .last()
+            .map(|chunk| chunk.timestamp.clone())
+            .unwrap_or_else(|| Utc::now())
+    }
+
     pub fn set_last_chunk(&mut self, bytes: &[u8]) {
         match self.chunks.pop() {
             Some(RawChunk { range, timestamp }) => {

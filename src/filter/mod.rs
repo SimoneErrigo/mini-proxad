@@ -210,6 +210,8 @@ impl Filter {
                             flow.id,
                             &flow.client_history.bytes,
                             &flow.server_history.bytes,
+                            flow.start,
+                            flow.client_history.last_timestamp(),
                         ),
                         &bytes,
                     );
@@ -241,6 +243,8 @@ impl Filter {
                             flow.id,
                             &flow.client_history.bytes,
                             &flow.server_history.bytes,
+                            flow.start,
+                            flow.server_history.last_timestamp(),
                         ),
                         &bytes,
                     );
@@ -265,7 +269,7 @@ impl Filter {
     pub async fn on_raw_open(&self, flow: &mut RawFlow) -> ControlFlow<()> {
         if let Some(ref func) = self.inner.read().await.raw_open {
             let result: anyhow::Result<Option<Py<PyEllipsis>>> = Python::with_gil(|py| {
-                let args = (PyRawFlow::new_empty(flow.id),);
+                let args = (PyRawFlow::new_empty(flow.id, flow.start),);
                 debug!("Running filter {} on flow {}", RAW_OPEN_FUNC, flow.id);
                 let result = func.bind(py).call1(args)?;
                 Ok(result.extract()?)

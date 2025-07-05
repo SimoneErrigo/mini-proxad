@@ -136,6 +136,7 @@ def client_raw_filter(flow: RawFlow, chunk: bytes) -> FilterOutput:
     #    if match:
     #        print("Found session_id:", match.group(1))
 
+    print("ELAPSED", (flow.last_time - flow.start_time).total_seconds())
     return run_filters(flow, chunk, CLIENT_FILTERS)
 
 

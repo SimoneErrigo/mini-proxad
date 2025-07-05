@@ -21,6 +21,14 @@ pub struct PyRawFlow {
     /// All the bytes sent by the server so far
     #[pyo3(get)]
     server_history: Option<Py<PyBytes>>,
+
+    /// Start time of this flow
+    #[pyo3(get)]
+    pub start_time: DateTime<Utc>,
+
+    /// Receive time of the last chunk
+    #[pyo3(get)]
+    pub last_time: Option<DateTime<Utc>>,
 }
 
 #[pymethods]
@@ -37,19 +45,29 @@ impl PyRawFlow {
 }
 
 impl PyRawFlow {
-    pub fn new_empty(id: Uuid) -> Self {
+    pub fn new_empty(id: Uuid, start_time: DateTime<Utc>) -> Self {
         PyRawFlow {
             id,
             client_history: None,
             server_history: None,
+            start_time,
+            last_time: None,
         }
     }
 
-    pub fn new(id: Uuid, client_history: &[u8], server_history: &[u8]) -> Self {
+    pub fn new(
+        id: Uuid,
+        client_history: &[u8],
+        server_history: &[u8],
+        start_time: DateTime<Utc>,
+        last_time: DateTime<Utc>,
+    ) -> Self {
         Python::with_gil(|py| PyRawFlow {
             id,
             client_history: Some(PyBytes::new(py, client_history).into()),
             server_history: Some(PyBytes::new(py, server_history).into()),
+            start_time,
+            last_time: Some(last_time),
         })
     }
 }
