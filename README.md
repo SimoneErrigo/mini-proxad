@@ -1,6 +1,7 @@
 # mini-proxad
 
 A small and lightweight proxy tailored for A/D events or general network analysis.
+Supports TLS (through RustTLS) and HTTP (through Hyper).
 
 ## How to run
 
@@ -84,4 +85,4 @@ http_max_body: 20MB
 
 If the `http_keep_alive` option is not set accordingly to the upstream service, connections will become unrealiable.
 
-Right now the only the body is counted in history limitations when in HTTP mode.
+When in `http_enabled` mode, only the body bytes are counted for history size limitations.
