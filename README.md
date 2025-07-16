@@ -1,7 +1,8 @@
 # mini-proxad
 
 A small and lightweight proxy tailored for A/D events or general network analysis.
-Supports TLS (through RustTLS) and HTTP (through Hyper).
+
+Supports TLS connections (via RustTLS) and HTTP parsing (via Hyper).
 
 ## How to run
 
