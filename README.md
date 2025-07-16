@@ -79,3 +79,9 @@ http_half_close: true
 http_date_header: false
 http_max_body: 20MB
 ```
+
+## Known issues
+
+If the `http_keep_alive` option is not set accordingly to the upstream service, connections will become unrealiable.
+
+Right now the only the body is counted in history limitations when in HTTP mode.
