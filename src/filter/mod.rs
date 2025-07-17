@@ -25,6 +25,7 @@ use crate::http::HttpResponse;
 const INOTIFY_DEBOUNCE_TIME: Duration = Duration::from_secs(2);
 
 const HTTP_FILTER_FUNC: &str = "http_filter";
+const HTTP_REQUEST_FUNC: &str = "http_request";
 const HTTP_OPEN_FUNC: &str = "http_open";
 
 const RAW_CLIENT_FUNC: &str = "client_raw_filter";
@@ -39,6 +40,7 @@ pub struct Filter {
 struct FilterModule {
     module: Py<PyModule>,
     http_filter: Option<Py<PyAny>>,
+    http_request: Option<Py<PyAny>>,
     http_open: Option<Py<PyAny>>,
     raw_client: Option<Py<PyAny>>,
     raw_server: Option<Py<PyAny>>,
@@ -94,6 +96,7 @@ impl Filter {
             Ok(FilterModule {
                 module: module.into(),
                 http_filter: load_function(intern!(py, HTTP_FILTER_FUNC))?,
+                http_request: load_function(intern!(py, HTTP_REQUEST_FUNC))?,
                 http_open: load_function(intern!(py, HTTP_OPEN_FUNC))?,
                 raw_client: load_function(intern!(py, RAW_CLIENT_FUNC))?,
                 raw_server: load_function(intern!(py, RAW_SERVER_FUNC))?,
@@ -171,6 +174,52 @@ impl Filter {
                 Ok(None) => (),
                 Err(e) => warn!("Failed to run python filter: {}", e),
             }
+        };
+        ControlFlow::Continue(())
+    }
+
+    pub async fn on_http_request(&self, flow: &mut HttpFlow) -> ControlFlow<()> {
+        if let Some(ref func) = self.inner.read().await.http_request {
+            let result: anyhow::Result<Either<Option<Py<PyHttpResp>>, Py<PyEllipsis>>> =
+                Python::with_gil(|py| {
+                    let (req, req_time) = flow
+                        .history
+                        .requests
+                        .last()
+                        .cloned()
+                        .map(|(req, time)| (req.into_pyobject(py), time))
+                        .ok_or_else(|| anyhow::anyhow!("Where is the request?"))?;
+
+                    debug!("Running filter {} for flow {}", HTTP_REQUEST_FUNC, flow.id);
+                    let args = (
+                        PyHttpFlow::new(flow.id, flow.start, Some(req_time), None),
+                        &req?,
+                    );
+                    let result = func.bind(py).call1(args)?;
+                    Ok(result.extract()?)
+                });
+
+            match result {
+                // Kill connection on ellipses
+                Ok(Either::Right(_)) => return ControlFlow::Break(()),
+                // Return custom response on HttpResp
+                Ok(Either::Left(Some(resp))) => {
+                    Python::with_gil(|py| match resp.extract::<HttpResponse>(py) {
+                        Ok(resp) => {
+                            trace!("Request blocked, returning custom response: {:?}", resp);
+                            // Add the custom response to history
+                            if let Some(req_time) = flow.history.requests.last().map(|(_, time)| *time) {
+                                flow.history.responses.push((resp, req_time));
+                            }
+                        }
+                        Err(e) => warn!("Failed to convert response: {}", e),
+                    });
+                    return ControlFlow::Break(());
+                }
+                // Do nothing on none
+                Ok(Either::Left(None)) => (),
+                Err(e) => warn!("Failed to run python filter: {}", e),
+            };
         };
         ControlFlow::Continue(())
     }

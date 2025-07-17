@@ -154,6 +154,22 @@ impl HyperService<Request<IncomingBody>> for ProxyHyper {
             let history_req = Request::from_parts(parts.clone(), body.clone());
             Self::push_request(&mut guard, history_req, body.len()).await?;
 
+            // Check if the request should be blocked by the filter
+            run_filter!(service.proxy, on_http_request, &mut guard.flow, {
+                info!("Python request filter killed flow {}", guard.flow.get_id());
+                
+                // If filter killed the connection, return the custom response if available
+                if let Some((HttpResponse(resp), _)) = guard.flow.history.responses.last() {
+                    let (parts, body) = resp.clone().into_parts();
+                    return Ok(Response::from_parts(parts, Self::full(body)));
+                } else {
+                    // Default blocked response
+                    let mut resp = Response::new(Self::full(FILTER_KILLED));
+                    *resp.status_mut() = hyper::StatusCode::FORBIDDEN;
+                    return Ok(resp);
+                }
+            });
+
             // Send the request to the real service
             let req = Request::from_parts(parts, Self::full(body));
             let resp = {
